@@ -156,7 +156,7 @@ C2 配置
 
 - [ ] 建立官网功能矩阵，并在每次 Sliver 依赖升级时复核。
 - [ ] 记录当前所有 Wails 绑定方法及其对应 RPC。
-- [ ] 建立统一的前端错误对象和中文错误映射。
+- [x] 建立统一的前端错误对象和中文错误映射。
 - [ ] 增加连接、断开、取消文件选择器和基础 RPC 的冒烟测试清单。
 - [ ] 明确受支持的 Windows、Linux、macOS 和 Teamserver 版本范围。
 - [ ] 为新增界面建立中文化、加载态、空态、错误态和窄窗口检查项。
@@ -357,7 +357,7 @@ node --check frontend/dist/main.js
 按“小步、可验证、低回归风险”的顺序，优先处理：
 
 1. [已完成] 建立 `ServerCapabilities` 数据结构和只读兼容性弹窗。
-2. 统一前端 RPC 错误格式及中文错误展示。
+2. [已完成] 统一前端 RPC 错误格式及中文错误展示。
 3. 建立最小任务中心，先接入 Beacon Task 和 Implant Generate。
 4. 将 Session/Beacon 详情逐步整理为标签式工作区。
 5. 再进入 Listener、C2 Profile 和 Implant Studio 的流程整合。

@@ -48,9 +48,21 @@ function loadState() {
 // ── Utils ──────────────────────────────────────────────────────────────────
 function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function toast(type, msg, dur=3000) {
+  if (type === 'error') type = 'err';
   const t = document.createElement('div'); t.className = `toast ${type}`; t.textContent = msg;
   document.getElementById('toasts').appendChild(t);
   setTimeout(() => t.remove(), dur);
+}
+function rpcError(error, context = '') { return RpcErrors.normalizeRpcError(error, context); }
+function rpcErrorMessage(error, context = '') { return RpcErrors.rpcErrorMessage(error, context); }
+function rpcErrorHtml(error, context = '') {
+  const info = rpcError(error, context);
+  return `<div class="rpc-error"><strong>${esc(info.message)}</strong>${info.detail ? `<details><summary>查看原始错误</summary><code>${esc(info.detail)}</code></details>` : ''}</div>`;
+}
+function toastRpcError(error, context = '') {
+  const info = rpcError(error, context);
+  if (!info.cancelled) toast('err', info.message, 5000);
+  return info;
 }
 
 // uiConfirm / uiPrompt — in-app replacements for the browser's native
@@ -195,13 +207,14 @@ async function importOperatorConfig(path) {
     document.getElementById('manual-cfg-path').value = '';
     toast('ok', `已添加操作员配置：${saved.name || saved.operator || path}`);
   } catch (e) {
-    errorEl.textContent = `配置导入失败：${String(e)}`;
+    errorEl.textContent = rpcErrorMessage(e, '配置导入失败');
   }
 }
 
 document.getElementById('pick-config-btn').addEventListener('click', async () => {
   const path = await App().PickConfigFile().catch(e => {
-    document.getElementById('connect-error').textContent = `打开文件选择器失败：${String(e)}`;
+    const info = rpcError(e, '打开文件选择器失败');
+    if (!info.cancelled) document.getElementById('connect-error').textContent = info.message;
     return null;
   });
   await importOperatorConfig(path);
@@ -216,8 +229,8 @@ document.getElementById('manual-cfg-path').addEventListener('keydown', function(
 document.getElementById('connect-btn').addEventListener('click', async () => {
   const btn = document.getElementById('connect-btn');
   btn.disabled = true; btn.textContent = '正在连接...';
-  const r = await App().Connect(selectedConfigPath).catch(e => ({ error: String(e) }));
-  if (r.error) { document.getElementById('connect-error').textContent = r.error; btn.disabled = false; btn.textContent = '连接'; return; }
+  const r = await App().Connect(selectedConfigPath).catch(error => ({ error }));
+  if (r.error) { document.getElementById('connect-error').textContent = rpcErrorMessage(r.error, '连接失败'); btn.disabled = false; btn.textContent = '连接'; return; }
   lastConfigPath = selectedConfigPath;
   try { localStorage.setItem(LAST_CFG_KEY, selectedConfigPath); } catch (e) {}
   enterApp(r);
@@ -1925,11 +1938,11 @@ function compatibilityStatus(status) {
 
 async function openCompatibilityPanel() {
   openViewPanel('_compatibility', '服务器兼容性', '<div class="compat-loading"><span class="spinner"></span>正在读取团队服务器能力...</div>');
-  const snapshot = await App().GetServerCompatibility().catch(error => ({ error: String(error) }));
+  const snapshot = await App().GetServerCompatibility().catch(error => ({ error }));
   const body = document.getElementById('modal-body');
   if (!body || document.getElementById('modal-overlay').classList.contains('hidden')) return;
   if (snapshot.error) {
-    body.innerHTML = `<div class="compat-error"><strong>无法读取兼容性信息</strong><span>${esc(snapshot.error)}</span></div>`;
+    body.innerHTML = rpcErrorHtml(snapshot.error, '无法读取兼容性信息');
     return;
   }
 
@@ -1944,7 +1957,7 @@ async function openCompatibilityPanel() {
         <span class="compat-badge ${status.cls}">${status.label}</span>
       </div>
       ${details.length ? `<div class="compat-tags">${details.map(detail => `<span>${esc(detail)}</span>`).join('')}</div>` : ''}
-      ${item.error ? `<details class="compat-detail"><summary>查看原始错误</summary><code>${esc(item.error)}</code></details>` : ''}
+      ${item.error ? `<details class="compat-detail"><summary>查看原始错误</summary><code>${esc(rpcError(item.error).detail || item.error)}</code></details>` : ''}
     </section>`;
   }).join('');
 
@@ -2125,14 +2138,14 @@ async function openScriptsPanel() {
       const pmap = getParamMap();
       const res = await App().ScriptPreview(sid, currentScript.method, pmap);
       if (res.error) {
-        out.textContent = `[ERROR] ${res.error}`;
+        out.textContent = `[错误] ${rpcErrorMessage(res.error, '脚本预览失败')}`;
         out.style.color = 'var(--accent)';
       } else {
         out.textContent = res.output;
         out.style.color = 'var(--cyan)';
       }
     } catch (e) {
-      out.textContent = `[ERROR] ${String(e)}`;
+      out.textContent = `[错误] ${rpcErrorMessage(e, '脚本预览失败')}`;
       out.style.color = 'var(--accent)';
     }
     btnPreview.disabled = false;
@@ -2263,12 +2276,12 @@ async function openScriptsPanel() {
           result = { error: '未知脚本：' + method };
       }
     } catch (e) {
-      result = { error: String(e) };
+      result = { error: e };
     }
 
     btnExec.disabled = false;
     if (result.error) {
-      out.textContent = `[ERROR] ${result.error}\n\n${result.output || ''}`;
+      out.textContent = `[错误] ${rpcErrorMessage(result.error, '执行脚本失败')}\n\n${result.output || ''}`;
       out.style.color = 'var(--accent)';
     } else {
       out.textContent = `[+] ${result.output || '完成'}`;
@@ -2640,7 +2653,7 @@ async function openC2Editor(name) {
   const ta = document.getElementById('c2-json'), status = document.getElementById('c2-status');
   if (name) {
     try { ta.value = await App().GetHTTPC2Profile(name); }
-    catch (e) { ta.value = ''; status.textContent = '加载失败：' + e; }
+    catch (e) { ta.value = ''; status.textContent = rpcErrorMessage(e, '加载配置档案失败'); }
   } else {
     ta.value = '';
     ta.placeholder = '粘贴 HTTP C2 配置档案 JSON（可先通过“c2profile <name>”复制一个作为起点）。';
@@ -2649,7 +2662,7 @@ async function openC2Editor(name) {
     if (!ta.value.trim()) { status.textContent = '没有可保存的内容'; return; }
     status.textContent = '正在保存...';
     try { await App().SaveHTTPC2Profile(ta.value, overwrite); status.textContent = '✓ 已保存'; toast('ok', 'HTTP C2 配置档案已保存'); }
-    catch (e) { status.textContent = '✕ ' + e; toast('err', String(e)); }
+    catch (e) { status.textContent = rpcErrorMessage(e, '保存失败'); toastRpcError(e, '保存 C2 配置档案失败'); }
   };
   document.getElementById('c2-save').addEventListener('click', () => save(true));
   document.getElementById('c2-savenew').addEventListener('click', () => save(false));
@@ -2661,8 +2674,9 @@ async function refreshLootList() {
   el.innerHTML = loot.map(l => `<div style="padding:4px 10px;font-size:12.5px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1">${esc(l.name)}</span><span style="color:var(--muted)">${esc(l.type)}</span><span style="color:var(--muted);font-family:var(--mono)">${esc(l.id.slice(0,10))}</span><button class="btn small" onclick="lootDownload('${esc(l.id)}')">下载</button><button class="btn small danger" onclick="App().DeleteLoot('${esc(l.id)}').then(refreshLootList)">删除</button></div>`).join('');
 }
 async function lootDownload(lootID) {
-  const r = await App().DownloadLoot(lootID).catch(e => ({ error: String(e) }));
-  toast(r.error ? 'err' : 'ok', r.error ? `战利品下载失败：${r.error}` : `已保存到 ${r.path}`);
+  const r = await App().DownloadLoot(lootID).catch(error => ({ error }));
+  if (r.error) toastRpcError(r.error, '战利品下载失败');
+  else toast('ok', `已保存到 ${r.path}`);
 }
 
 // ── Creds panel ─────────────────────────────────────────────────────────────
@@ -2683,8 +2697,8 @@ function openCredsPanel() {
   f.addEventListener('submit', async e => {
     e.preventDefault();
     const msg = document.getElementById('cred-msg'); msg.textContent = '正在保存...'; msg.className = 'status-msg';
-    const err = await App().AddCred(f.username.value, f.plaintext.value, f.hash.value).then(()=>null).catch(e=>String(e));
-    if (err) { msg.textContent = err; msg.className = 'status-msg err'; }
+    const err = await App().AddCred(f.username.value, f.plaintext.value, f.hash.value).then(()=>null).catch(e=>e);
+    if (err) { msg.textContent = rpcErrorMessage(err, '添加凭据失败'); msg.className = 'status-msg err'; }
     else { msg.textContent = '已添加'; msg.className = 'status-msg ok'; f.reset(); refreshCredsList(); }
   });
   refreshCredsList();
@@ -2722,11 +2736,12 @@ async function deleteBuild(name) {
   if (!(await uiConfirm(`确定删除构建 ${esc(name)} 吗？`, { title: '删除构建', okLabel: '删除', danger: true }))) return;
   await App().DeleteBuild(name)
     .then(() => { toast('ok', `已删除构建 ${name}`); refreshBuildsList(); })
-    .catch(e => toast('err', '删除失败：' + e));
+    .catch(e => toastRpcError(e, '删除构建失败'));
 }
 async function buildRegen(name) {
-  const r = await App().RegenerateBuild(name).catch(e => ({ error: String(e) }));
-  toast(r.error ? 'err' : 'ok', r.error ? `重新生成失败：${r.error}` : `已保存到 ${r.path}`);
+  const r = await App().RegenerateBuild(name).catch(error => ({ error }));
+  if (r.error) toastRpcError(r.error, '重新生成构建失败');
+  else toast('ok', `已保存到 ${r.path}`);
 }
 
 function profilesContent() {
@@ -2774,8 +2789,8 @@ function wireProfileForm() {
     const req = { name:f.name.value, goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2Url:f.c2Url.value, debug:f.debug.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0 };
     const msg = document.getElementById('prof-msg');
     msg.textContent = '正在保存...'; msg.className = 'status-msg';
-    const r = await App().SaveImplantProfile(req).catch(e => String(e));
-    if (r) { msg.textContent = String(r); msg.className = 'status-msg err'; }
+    const r = await App().SaveImplantProfile(req).then(() => null).catch(e => e);
+    if (r) { msg.textContent = rpcErrorMessage(r, '保存配置档案失败'); msg.className = 'status-msg err'; }
     else { msg.textContent = '配置档案已保存'; msg.className = 'status-msg ok'; f.reset(); refreshProfilesList(); }
   });
 }
@@ -2853,7 +2868,7 @@ async function wireListeners() {
       else if (type==='http') await App().StartHTTPListener({host,port,secure:false});
       else if (type==='dns') await App().StartDNSListener({domains:[host]});
       msg.textContent = `${type.toUpperCase()} 已在 :${port} 启动`; msg.className = 'status-msg ok';
-    } catch(e) { msg.textContent = String(e); msg.className = 'status-msg err'; }
+    } catch(e) { msg.textContent = rpcErrorMessage(e, '启动监听器失败'); msg.className = 'status-msg err'; }
     refreshListenerList();
   });
   refreshListenerList();
@@ -2910,12 +2925,12 @@ function openGeneratePanel() {
       const req = { name:f.name.value, goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2Url:f.c2Url.value, debug:f.debug.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0 };
       document.getElementById('gen-status').style.display = 'flex';
       document.getElementById('gen-result').textContent = '';
-      const r = await App().GenerateImplant(req).catch(e => ({error:String(e)}));
+      const r = await App().GenerateImplant(req).catch(error => ({error}));
       document.getElementById('gen-status').style.display = 'none';
       const res = document.getElementById('gen-result');
       if (r.error) {
-        res.textContent = `[ERROR] ${r.error}`;
-        res.style.color = 'var(--accent)';
+        res.innerHTML = rpcErrorHtml(r.error, '生成植入体失败');
+        res.style.color = '';
       } else {
         res.style.color = 'var(--ok)';
         res.innerHTML = `<span>[成功] 已创建构建：${esc(r.name || r.file)}</span> <button class="btn small" style="margin-left:10px" onclick="buildRegen('${esc(r.name || r.file)}')">⬇ 保存到磁盘</button>`;
@@ -2982,7 +2997,7 @@ function onDisconnected(reason) {
   if (reconnecting) return;
   reconnecting = true; clearInterval(pollTimer);
   document.getElementById('reconnect-overlay').classList.remove('hidden');
-  document.getElementById('reconnect-status').textContent = reason || '连接已断开';
+  document.getElementById('reconnect-status').textContent = reason ? rpcErrorMessage(reason, '连接已断开') : '连接已断开';
   startReconnect();
 }
 function startReconnect() {
@@ -2995,9 +3010,9 @@ async function attemptReconnect() {
   if (!lastConfigPath) { cancelReconnect(); return; }
   clearInterval(reconnectTimer);
   document.getElementById('reconnect-status').textContent = '正在重新连接...';
-  const r = await App().Connect(lastConfigPath).catch(e => ({error:String(e)}));
+  const r = await App().Connect(lastConfigPath).catch(error => ({error}));
   if (r && r.connected) { reconnecting = false; document.getElementById('reconnect-overlay').classList.add('hidden'); wireEventStream(); refreshAgents(); pollTimer = setInterval(refreshAgents, 5000); toast('ok','已重新连接'); }
-  else { document.getElementById('reconnect-status').textContent = r?.error||'连接失败'; startReconnect(); }
+  else { document.getElementById('reconnect-status').textContent = r?.error ? rpcErrorMessage(r.error, '重新连接失败') : '重新连接失败'; startReconnect(); }
 }
 function cancelReconnect() { reconnecting = false; clearInterval(reconnectTimer); document.getElementById('reconnect-overlay').classList.add('hidden'); }
 document.getElementById('reconnect-now-btn').addEventListener('click', attemptReconnect);
@@ -3115,8 +3130,8 @@ async function openFileBrowser(sessionID) {
     pv.querySelector(`#fb-del-${dockId}`)?.addEventListener('click', async () => {
       const ok = await uiConfirm(`确定删除“${f.name}”吗？`, { title: '删除文件', okLabel: '删除', danger: true });
       if (!ok) return;
-      const err = await App().FileBrowserDelete(sessionID, fullPath).catch(e => e.toString());
-      if (err) { toast('error', err); return; }
+      const err = await App().FileBrowserDelete(sessionID, fullPath).then(() => null).catch(e => e);
+      if (err) { toastRpcError(err, '删除文件失败'); return; }
       toast('ok', `已删除：${f.name}`);
       renderDir(currentPath, false);
     });
@@ -3125,8 +3140,8 @@ async function openFileBrowser(sessionID) {
   async function renderDir(path, addToHistory) {
     const container = document.getElementById(`fb-dock-${dockId}`);
     if (!container) return;
-    const result = await App().FileBrowserList(sessionID, path);
-    if (result.error) { toast('error', result.error); container.innerHTML = `<p style="padding:10px;color:var(--accent)">错误：${esc(result.error)}</p>`; return; }
+    const result = await App().FileBrowserList(sessionID, path).catch(error => ({ error }));
+    if (result.error) { toastRpcError(result.error, '读取目录失败'); container.innerHTML = rpcErrorHtml(result.error, '读取目录失败'); return; }
     currentPath = result.path || path;
 
     if (addToHistory !== false) {
@@ -3253,8 +3268,8 @@ async function openProcessBrowser(sessionID) {
   async function loadProcs() {
     const container = document.getElementById(`pb-dock-${dockId}`);
     if (!container) return;
-    const result = await App().ProcessBrowserList(sessionID);
-    if (result.error) { toast('error', result.error); container.innerHTML = `<p style="padding:10px;color:var(--accent)">错误：${esc(result.error)}</p>`; return; }
+    const result = await App().ProcessBrowserList(sessionID).catch(error => ({ error }));
+    if (result.error) { toastRpcError(result.error, '读取进程失败'); container.innerHTML = rpcErrorHtml(result.error, '读取进程失败'); return; }
 
     const allProcs = result.processes.sort((a, b) => a.pid - b.pid);
 
@@ -3326,7 +3341,8 @@ async function openProcessBrowser(sessionID) {
       if (!selectedPID) { toast('info', '请先选择一个进程'); return; }
       const ok = await uiConfirm(`确定终止 PID ${selectedPID} 吗？`, { title: '终止进程', okLabel: '终止', danger: true });
       if (!ok) return;
-      await App().ProcessBrowserKill(sessionID, selectedPID);
+      const killError = await App().ProcessBrowserKill(sessionID, selectedPID).then(() => null).catch(e => e);
+      if (killError) { toastRpcError(killError, '终止进程失败'); return; }
       toast('ok', `已终止 PID ${selectedPID}`);
       loadProcs();
     });
@@ -3556,8 +3572,10 @@ async function openC2ProfileEditor() {
   // Load profile into editor
   async function loadProfile(name) {
     status.textContent = '正在加载...';
-    const json = await App().GetHTTPC2Profile(name).catch(e => null);
-    if (!json) { status.textContent = '配置档案加载失败'; return; }
+    const result = await App().GetHTTPC2Profile(name).then(json => ({ json })).catch(error => ({ error }));
+    if (result.error) { status.textContent = rpcErrorMessage(result.error, '配置档案加载失败'); return; }
+    const json = result.json;
+    if (!json) { status.textContent = '配置档案加载失败：服务器返回了空内容'; return; }
     editor.value = json;
     currentProfileName = name;
     activeName.textContent = name;
@@ -3573,8 +3591,8 @@ async function openC2ProfileEditor() {
     const json = editor.value.trim();
     if (!json) { status.textContent = '编辑器内容为空'; return; }
     status.textContent = '正在保存...';
-    const err = await App().SaveHTTPC2Profile(json, true).catch(e => e.toString());
-    if (err) { status.textContent = '错误：' + err; toast('error', err); return; }
+    const err = await App().SaveHTTPC2Profile(json, true).then(() => null).catch(e => e);
+    if (err) { status.textContent = rpcErrorMessage(err, '保存失败'); toastRpcError(err, '保存 C2 配置档案失败'); return; }
     status.textContent = '已保存！';
     toast('ok', 'C2 配置档案已保存（覆盖）');
   });
@@ -3583,8 +3601,8 @@ async function openC2ProfileEditor() {
     const json = editor.value.trim();
     if (!json) { status.textContent = '编辑器内容为空'; return; }
     status.textContent = '正在另存为新档案...';
-    const err = await App().SaveHTTPC2Profile(json, false).catch(e => e.toString());
-    if (err) { status.textContent = '错误：' + err; toast('error', err); return; }
+    const err = await App().SaveHTTPC2Profile(json, false).then(() => null).catch(e => e);
+    if (err) { status.textContent = rpcErrorMessage(err, '另存失败'); toastRpcError(err, '另存 C2 配置档案失败'); return; }
     status.textContent = '已另存为新配置档案！';
     toast('ok', '已创建新的 C2 配置档案');
     openC2ProfileEditor(); // refresh list

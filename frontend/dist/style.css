@@ -28,6 +28,10 @@ code{font-family:var(--mono);font-size:11px;background:var(--panel-alt);padding:
 .toast.warn{border-left:3px solid var(--warn);}
 .toast.err{border-left:3px solid var(--accent);}
 .toast.info{border-left:3px solid var(--info);}
+.rpc-error{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:1px solid rgba(226,60,78,.45);background:rgba(226,60,78,.08);color:var(--accent);font-size:12px;line-height:1.5;}
+.rpc-error details{color:var(--text-dim);font-size:10.5px;}
+.rpc-error summary{cursor:pointer;}
+.rpc-error code{display:block;margin-top:7px;padding:8px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--accent);}
 
 /* Connect / overlays */
 .overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg-2);}
