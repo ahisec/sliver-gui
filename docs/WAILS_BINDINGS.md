@@ -9,7 +9,7 @@
 | `AddCred` | Sliver RPC/客户端封装 | `app.go:1642` | `(username, plaintext, hash string) error` |
 | `AddIOC` | 客户端本地辅助 | `panels.go:719` | `(host, iocType, path, detail string) IOCEntry` |
 | `AddMonitorConfig` | Sliver RPC/客户端封装 | `features.go:855` | `(providerType, apiKey, apiPassword string) error` |
-| `AddPortForward` | Sliver RPC/客户端封装 | `app.go:2722` | `(sessionID string, localPort int, remoteHost string, remotePort int) error` |
+| `AddPortForward` | Sliver RPC/客户端封装 | `app.go:2727` | `(sessionID string, localPort int, remoteHost string, remotePort int) error` |
 | `AddWebsiteContent` | Sliver RPC/客户端封装 | `features.go:627` | `(website, webPath, localFile string) error` |
 | `AppVersion` | 客户端本地辅助 | `version.go:67` | `() BuildInfo` |
 | `ArmoryInstall` | 外部内容/本地安装 | `armory.go:106` | `(packageName string) error` |
@@ -31,12 +31,12 @@
 | `ConvertDLLToShellcode` | Sliver RPC/客户端封装 | `features.go:994` | `(dllPath, functionName, args string) (string, error)` |
 | `CopyFile` | Sliver RPC/客户端封装 | `app.go:854` | `(sessionID, src, dst string) (int64, error)` |
 | `CopyMCPToken` | Sliver RPC/客户端封装 | `mcp.go:137` | `() error` |
-| `CurrentTokenOwner` | Sliver RPC/客户端封装 | `app.go:2846` | `(sessionID string) (string, error)` |
+| `CurrentTokenOwner` | Sliver RPC/客户端封装 | `app.go:2851` | `(sessionID string) (string, error)` |
 | `DelMonitorConfig` | Sliver RPC/客户端封装 | `features.go:874` | `(id string) error` |
 | `DeleteBuild` | Sliver RPC/客户端封装 | `app.go:2002` | `(name string) error` |
 | `DeleteCred` | Sliver RPC/客户端封装 | `app.go:1653` | `(id string) error` |
 | `DeleteHost` | Sliver RPC/客户端封装 | `app.go:1608` | `(hostID string) error` |
-| `DeleteImplantProfile` | Sliver RPC/客户端封装 | `app.go:3374` | `(name string) error` |
+| `DeleteImplantProfile` | Sliver RPC/客户端封装 | `app.go:3391` | `(name string) error` |
 | `DeleteLoot` | Sliver RPC/客户端封装 | `app.go:1888` | `(lootID string) error` |
 | `Disconnect` | Sliver RPC/客户端封装 | `app.go:174` | `()` |
 | `DllHijack` | Sliver RPC/客户端封装 | `app.go:1759` | `(sessionID, referenceDLLPath, targetLocation, profileName string) error` |
@@ -46,9 +46,9 @@
 | `DownloadLoot` | RPC 与本地文件系统 | `app.go:1931` | `(lootID string) TransferResult` |
 | `EncodeShellcode` | Sliver RPC/客户端封装 | `features.go:1027` | `(inPath, architecture string, iterations int) (string, error)` |
 | `ExecWasmExtension` | Sliver RPC/客户端封装 | `features.go:1094` | `(sessionID, name string, args []string) ExecResult` |
-| `ExecuteAssembly` | Sliver RPC/客户端封装 | `app.go:2949` | `(sessionID, localPath, args string) AssemblyResult` |
-| `ExecuteBeaconCommand` | Sliver RPC/客户端封装 | `app.go:3399` | `(beaconID, command string) BeaconTaskResult` |
-| `ExecuteBeaconCommandAsync` | Sliver RPC/客户端封装 | `app.go:3519` | `(beaconID, command string) BeaconTaskResult` |
+| `ExecuteAssembly` | Sliver RPC/客户端封装 | `app.go:2954` | `(sessionID, localPath, args string) AssemblyResult` |
+| `ExecuteBeaconCommand` | Sliver RPC/客户端封装 | `app.go:3416` | `(beaconID, command string) BeaconTaskResult` |
+| `ExecuteBeaconCommandAsync` | Sliver RPC/客户端封装 | `app.go:3536` | `(beaconID, command string) BeaconTaskResult` |
 | `ExecuteCommand` | Sliver RPC/客户端封装 | `app.go:364` | `(sessionID, command string) ExecResult` |
 | `ExecuteShellcode` | Sliver RPC/客户端封装 | `app.go:1329` | `(sessionID, localPath string, pid uint32) AssemblyResult` |
 | `ExecuteWindowsAdvanced` | Sliver RPC/客户端封装 | `features.go:969` | `(sessionID, path string, args []string, useToken, hideWindow bool, ppid int) ExecResult` |
@@ -59,13 +59,13 @@
 | `FileBrowserMounts` | 客户端本地辅助 | `panels.go:93` | `(sessionID string) FileSystemMountsResult` |
 | `FileBrowserProperties` | 客户端本地辅助 | `panels.go:196` | `(sessionID, path string) FilePropertiesResult` |
 | `GenerateCleanupScript` | 客户端本地辅助 | `panels.go:754` | `() string` |
-| `GenerateImplant` | Sliver RPC/客户端封装 | `app.go:2378` | `(req GenerateRequest) GenerateResult` |
+| `GenerateImplant` | Sliver RPC/客户端封装 | `app.go:2383` | `(req GenerateRequest) GenerateResult` |
 | `GenerateReport` | 客户端本地辅助 | `panels.go:804` | `() string` |
 | `GenerateUniqueWGIP` | Sliver RPC/客户端封装 | `features.go:913` | `() (string, error)` |
 | `GenerateWGClientConfig` | Sliver RPC/客户端封装 | `features.go:895` | `() (WGClientConfigView, error)` |
 | `GetAgentIPs` | 客户端本地辅助 | `panels.go:419` | `(sessionID string) AgentIPs` |
-| `GetBeaconTaskResult` | Sliver RPC/客户端封装 | `app.go:3634` | `(taskID string) (BeaconTaskView, error)` |
-| `GetBeaconTasks` | Sliver RPC/客户端封装 | `app.go:3589` | `(beaconID string) ([]BeaconTaskView, error)` |
+| `GetBeaconTaskResult` | Sliver RPC/客户端封装 | `app.go:3651` | `(taskID string) (BeaconTaskView, error)` |
+| `GetBeaconTasks` | Sliver RPC/客户端封装 | `app.go:3606` | `(beaconID string) ([]BeaconTaskView, error)` |
 | `GetBuildHistory` | Sliver RPC/客户端封装 | `app.go:1972` | `() ([]BuildView, error)` |
 | `GetBuilders` | 客户端本地辅助 | `panels.go:684` | `() ([]map[string]interface{}, error)` |
 | `GetCompilerInfo` | Sliver RPC/客户端封装 | `features.go:315` | `() (CompilerView, error)` |
@@ -84,12 +84,12 @@
 | `GetPrivs` | Sliver RPC/客户端封装 | `app.go:932` | `(sessionID string) (PrivsResult, error)` |
 | `GetProcessList` | Sliver RPC/客户端封装 | `app.go:471` | `(sessionID string) ([]ProcessView, error)` |
 | `GetServerCompatibility` | 兼容性聚合 | `compatibility.go:47` | `() (ServerCompatibility, error)` |
-| `GetSystem` | Sliver RPC/客户端封装 | `app.go:2902` | `(sessionID, hostingProcess, profileName string) error` |
+| `GetSystem` | Sliver RPC/客户端封装 | `app.go:2907` | `(sessionID, hostingProcess, profileName string) error` |
 | `GetTeamCenterSnapshot` | Sliver RPC/客户端封装 | `team_center.go:206` | `() TeamCenterSnapshot` |
 | `GetVersion` | Sliver RPC/客户端封装 | `app.go:263` | `() (VersionInfo, error)` |
 | `GrepFiles` | Sliver RPC/客户端封装 | `features.go:30` | `(sessionID, pattern, path string, recursive bool) (string, error)` |
 | `Ifconfig` | Sliver RPC/客户端封装 | `app.go:902` | `(sessionID string) ([]NetInterfaceView, error)` |
-| `ImpersonateUser` | Sliver RPC/客户端封装 | `app.go:2877` | `(sessionID, username string) error` |
+| `ImpersonateUser` | Sliver RPC/客户端封装 | `app.go:2882` | `(sessionID, username string) error` |
 | `ImportConfig` | 客户端本地辅助 | `config_store.go:101` | `(srcPath string) (SavedConfig, error)` |
 | `ImportHTTPC2ProfileFile` | Sliver RPC/客户端封装 | `features.go:583` | `() (string, error)` |
 | `InteractiveBeacon` | Sliver RPC/客户端封装 | `app.go:1536` | `(beaconID string) error` |
@@ -108,18 +108,18 @@
 | `ListHTTPC2Profiles` | Sliver RPC/客户端封装 | `features.go:383` | `() ([]HTTPC2View, error)` |
 | `ListHosts` | Sliver RPC/客户端封装 | `app.go:1588` | `() ([]HostView, error)` |
 | `ListImplantExtensions` | Sliver RPC/客户端封装 | `extensions.go:212` | `(sessionID string) ([]string, error)` |
-| `ListImplantProfiles` | Sliver RPC/客户端封装 | `app.go:3182` | `() ([]ProfileView, error)` |
+| `ListImplantProfiles` | Sliver RPC/客户端封装 | `app.go:3192` | `() ([]ProfileView, error)` |
 | `ListInstalledExtensions` | Sliver RPC/客户端封装 | `extensions.go:166` | `() ([]ExtCommandView, error)` |
 | `ListJobs` | Sliver RPC/客户端封装 | `app.go:2111` | `() ([]JobView, error)` |
 | `ListMonitorConfig` | Sliver RPC/客户端封装 | `features.go:508` | `() ([]MonitorProviderView, error)` |
 | `ListMounts` | Sliver RPC/客户端封装 | `features.go:82` | `(sessionID string) ([]MountView, error)` |
 | `ListOperators` | Sliver RPC/客户端封装 | `app.go:2081` | `() ([]OperatorView, error)` |
-| `ListPivots` | Sliver RPC/客户端封装 | `app.go:2500` | `(sessionID string) ([]PivotView, error)` |
-| `ListPortForwards` | Sliver RPC/客户端封装 | `app.go:2762` | `(sessionID string) ([]PortForwardView, error)` |
+| `ListPivots` | Sliver RPC/客户端封装 | `app.go:2505` | `(sessionID string) ([]PivotView, error)` |
+| `ListPortForwards` | Sliver RPC/客户端封装 | `app.go:2767` | `(sessionID string) ([]PortForwardView, error)` |
 | `ListRportFwds` | Sliver RPC/客户端封装 | `app.go:1485` | `(sessionID string) ([]RportFwdView, error)` |
 | `ListSavedConfigs` | 客户端本地辅助 | `config_store.go:53` | `() []SavedConfig` |
 | `ListScripts` | 客户端工作流编排 | `scripts.go:1053` | `() []ScriptInfo` |
-| `ListServices` | Sliver RPC/客户端封装 | `app.go:3062` | `(sessionID string) ([]ServiceView, error)` |
+| `ListServices` | Sliver RPC/客户端封装 | `app.go:3067` | `(sessionID string) ([]ServiceView, error)` |
 | `ListSessions` | Sliver RPC/客户端封装 | `app.go:300` | `() ([]SessionView, error)` |
 | `ListShellcodeEncoders` | Sliver RPC/客户端封装 | `features.go:418` | `() ([]string, error)` |
 | `ListTrafficEncoders` | Sliver RPC/客户端封装 | `features.go:400` | `() ([]string, error)` |
@@ -130,7 +130,7 @@
 | `ListenerC2Options` | Sliver RPC/客户端封装 | `app.go:2269` | `() ([]string, error)` |
 | `LootFile` | Sliver RPC/客户端封装 | `app.go:1901` | `(sessionID, remotePath string) error` |
 | `MakeDirectory` | Sliver RPC/客户端封装 | `app.go:797` | `(sessionID, path string) error` |
-| `MakeToken` | Sliver RPC/客户端封装 | `app.go:2862` | `(sessionID, username, domain, password string) error` |
+| `MakeToken` | Sliver RPC/客户端封装 | `app.go:2867` | `(sessionID, username, domain, password string) error` |
 | `MemfilesAdd` | Sliver RPC/客户端封装 | `features.go:132` | `(sessionID string) (int64, error)` |
 | `MemfilesList` | Sliver RPC/客户端封装 | `features.go:110` | `(sessionID string) (string, error)` |
 | `MemfilesRm` | Sliver RPC/客户端封装 | `features.go:148` | `(sessionID string, fd int64) error` |
@@ -143,7 +143,7 @@
 | `PickPEMetadataFile` | RPC 与本地文件系统 | `app.go:115` | `() (string, error)` |
 | `PickWasmFile` | RPC 与本地文件系统 | `app.go:127` | `() (string, error)` |
 | `PingSession` | Sliver RPC/客户端封装 | `features.go:736` | `(sessionID string) error` |
-| `PreflightImplant` | Sliver RPC/客户端封装 | `implant_studio.go:203` | `(req GenerateRequest) (ImplantPreflight, error)` |
+| `PreflightImplant` | Sliver RPC/客户端封装 | `implant_studio.go:216` | `(req GenerateRequest) (ImplantPreflight, error)` |
 | `PreflightNetworkRoute` | Sliver RPC/客户端封装 | `infrastructure.go:237` | `(kind, listen, target string) NetworkPreflight` |
 | `PrintWorkingDir` | Sliver RPC/客户端封装 | `app.go:827` | `(sessionID string) (string, error)` |
 | `ProcessBrowserKill` | 客户端本地辅助 | `panels.go:396` | `(sessionID string, pid int32) error` |
@@ -164,9 +164,9 @@
 | `RegistryWriteValue` | Sliver RPC/客户端封装 | `app.go:715` | `(sessionID, hive, path, key, value string) error` |
 | `RemoveFile` | Sliver RPC/客户端封装 | `app.go:977` | `(sessionID, path string) error` |
 | `RemoveHostIOC` | Sliver RPC/客户端封装 | `features.go:751` | `(iocID, path, fileHash string) error` |
-| `RemovePortForward` | Sliver RPC/客户端封装 | `app.go:2746` | `(sessionID string, localPort int) error` |
+| `RemovePortForward` | Sliver RPC/客户端封装 | `app.go:2751` | `(sessionID string, localPort int) error` |
 | `RemoveSavedConfig` | 客户端本地辅助 | `config_store.go:142` | `(path string) error` |
-| `RemoveService` | Sliver RPC/客户端封装 | `app.go:3136` | `(sessionID, hostname, serviceName string) error` |
+| `RemoveService` | Sliver RPC/客户端封装 | `app.go:3141` | `(sessionID, hostname, serviceName string) error` |
 | `RemoveWebsite` | Sliver RPC/客户端封装 | `app.go:1689` | `(name string) error` |
 | `RemoveWebsiteContent` | Sliver RPC/客户端封装 | `features.go:651` | `(website, webPath string) error` |
 | `RenameLoot` | Sliver RPC/客户端封装 | `features.go:764` | `(id, name string) error` |
@@ -175,13 +175,13 @@
 | `ResetKillChain` | 客户端本地辅助 | `panels.go:641` | `() KillChainState` |
 | `ResizeShell` | Sliver 隧道/RPC | `shell.go:139` | `(tunnelID string, rows, cols int) error` |
 | `RestartJobs` | Sliver RPC/客户端封装 | `features.go:436` | `(ids []int) error` |
-| `RevToSelf` | Sliver RPC/客户端封装 | `app.go:2889` | `(sessionID string) error` |
+| `RevToSelf` | Sliver RPC/客户端封装 | `app.go:2894` | `(sessionID string) error` |
 | `RunAs` | Sliver RPC/客户端封装 | `app.go:1252` | `(sessionID, username, domain, password, program, args string) (string, error)` |
 | `RunExecute` | Sliver RPC/客户端封装 | `app.go:418` | `(sessionID, path string, args []string) ExecResult` |
 | `RunExtension` | Sliver RPC/客户端封装 | `extensions.go:328` | `(sessionID, command string, args []string) (string, error)` |
 | `SSHExec` | Sliver RPC/客户端封装 | `features.go:170` | `(sessionID, host string, port int, user, pass, command string) SSHResult` |
 | `SaveHTTPC2Profile` | Sliver RPC/客户端封装 | `features.go:607` | `(profileJSON string, overwrite bool) error` |
-| `SaveImplantProfile` | Sliver RPC/客户端封装 | `app.go:3231` | `(req GenerateRequest) error` |
+| `SaveImplantProfile` | Sliver RPC/客户端封装 | `app.go:3243` | `(req GenerateRequest) error` |
 | `ScriptADEnum` | 客户端工作流编排 | `scripts.go:754` | `(sessionID string) ScriptResult` |
 | `ScriptDCSync` | 客户端工作流编排 | `scripts.go:740` | `(sessionID string) ScriptResult` |
 | `ScriptGetSystem` | 客户端工作流编排 | `scripts.go:513` | `(sessionID, profile string) ScriptResult` |
@@ -218,9 +218,9 @@
 | `SendShellData` | Sliver 隧道/RPC | `shell.go:124` | `(tunnelID, b64data string) error` |
 | `ServiceDetail` | Sliver RPC/客户端封装 | `features.go:232` | `(sessionID, hostname, name string) (ServiceView, error)` |
 | `SetEnvVar` | Sliver RPC/客户端封装 | `app.go:591` | `(sessionID, key, value string) error` |
-| `Sideload` | Sliver RPC/客户端封装 | `app.go:2971` | `(sessionID, localPath, args, entryPoint string) AssemblyResult` |
+| `Sideload` | Sliver RPC/客户端封装 | `app.go:2976` | `(sessionID, localPath, args, entryPoint string) AssemblyResult` |
 | `SniffCredHashType` | Sliver RPC/客户端封装 | `features.go:708` | `(hash string) (string, error)` |
-| `SocksProxyStatus` | Sliver RPC/客户端封装 | `app.go:2616` | `(sessionID string) int` |
+| `SocksProxyStatus` | Sliver RPC/客户端封装 | `app.go:2621` | `(sessionID string) int` |
 | `SpawnDll` | Sliver RPC/客户端封装 | `app.go:1351` | `(sessionID, localPath, args, entryPoint string) AssemblyResult` |
 | `StartDNSListener` | Sliver RPC/客户端封装 | `app.go:2207` | `(req StartDNSReq) error` |
 | `StartEngagementTimer` | 客户端本地辅助 | `panels.go:662` | `() string` |
@@ -229,20 +229,20 @@
 | `StartMCP` | Sliver RPC/客户端封装 | `mcp.go:94` | `(req MCPStartRequest) (MCPStatusView, error)` |
 | `StartMTLSListener` | Sliver RPC/客户端封装 | `app.go:2150` | `(req StartMTLSReq) error` |
 | `StartMonitor` | Sliver RPC/客户端封装 | `features.go:480` | `() error` |
-| `StartPivotListener` | Sliver RPC/客户端封装 | `app.go:2524` | `(sessionID, pivotType, bindAddress string) error` |
+| `StartPivotListener` | Sliver RPC/客户端封装 | `app.go:2529` | `(sessionID, pivotType, bindAddress string) error` |
 | `StartRportFwd` | Sliver RPC/客户端封装 | `app.go:1466` | `(sessionID, bindAddr string, bindPort int, fwdAddr string, fwdPort int) error` |
-| `StartService` | Sliver RPC/客户端封装 | `app.go:3109` | `(sessionID, hostname, serviceName, binPath string) error` |
+| `StartService` | Sliver RPC/客户端封装 | `app.go:3114` | `(sessionID, hostname, serviceName, binPath string) error` |
 | `StartServiceByName` | Sliver RPC/客户端封装 | `features.go:248` | `(sessionID, hostname, name string) error` |
-| `StartSocksProxy` | Sliver RPC/客户端封装 | `app.go:2573` | `(sessionID string, localPort int) error` |
+| `StartSocksProxy` | Sliver RPC/客户端封装 | `app.go:2578` | `(sessionID string, localPort int) error` |
 | `StartStagerListener` | Sliver RPC/客户端封装 | `app.go:1725` | `(host string, port uint32, profileName string) (uint32, error)` |
 | `StartWGListener` | Sliver RPC/客户端封装 | `app.go:2230` | `(req StartWGReq) error` |
 | `StopInteractiveShell` | Sliver 隧道/RPC | `shell.go:160` | `(tunnelID string) error` |
 | `StopMCP` | Sliver RPC/客户端封装 | `mcp.go:125` | `() error` |
 | `StopMonitor` | Sliver RPC/客户端封装 | `features.go:497` | `() error` |
-| `StopPivotListener` | Sliver RPC/客户端封装 | `app.go:2548` | `(sessionID string, pivotID uint32) error` |
+| `StopPivotListener` | Sliver RPC/客户端封装 | `app.go:2553` | `(sessionID string, pivotID uint32) error` |
 | `StopRportFwd` | Sliver RPC/客户端封装 | `app.go:1507` | `(sessionID string, id uint32) error` |
-| `StopService` | Sliver RPC/客户端封装 | `app.go:3123` | `(sessionID, hostname, serviceName string) error` |
-| `StopSocksProxy` | Sliver RPC/客户端封装 | `app.go:2601` | `(sessionID string) error` |
+| `StopService` | Sliver RPC/客户端封装 | `app.go:3128` | `(sessionID, hostname, serviceName string) error` |
+| `StopSocksProxy` | Sliver RPC/客户端封装 | `app.go:2606` | `(sessionID string) error` |
 | `TakeScreenshot` | Sliver RPC/客户端封装 | `app.go:446` | `(sessionID string) (string, error)` |
 | `UnsetEnvVar` | Sliver RPC/客户端封装 | `app.go:603` | `(sessionID, key string) error` |
 | `UpdateCredential` | Sliver RPC/客户端封装 | `features.go:693` | `(id, username, plaintext, hash string, cracked bool) error` |

@@ -2327,6 +2327,11 @@ type GenerateRequest struct {
 	HTTPC2Profile       string           `json:"httpC2Profile"`
 	TrafficEncoders     []string         `json:"trafficEncoders"`
 	TemplateName        string           `json:"templateName"`
+	GoPackage           string           `json:"goPackage"`
+	Extension           string           `json:"extension"`
+	WGPeerTunIP         string           `json:"wgPeerTunIp"`
+	WGKeyExchangePort   uint32           `json:"wgKeyExchangePort"`
+	WGTCPCommsPort      uint32           `json:"wgTcpCommsPort"`
 	CanaryDomains       []string         `json:"canaryDomains"`
 	LimitDomainJoined   bool             `json:"limitDomainJoined"`
 	LimitDatetime       string           `json:"limitDatetime"`
@@ -3170,6 +3175,11 @@ type ProfileView struct {
 	HTTPC2Profile       string           `json:"httpC2Profile"`
 	TrafficEncoders     []string         `json:"trafficEncoders"`
 	TemplateName        string           `json:"templateName"`
+	GoPackage           string           `json:"goPackage"`
+	Extension           string           `json:"extension"`
+	WGPeerTunIP         string           `json:"wgPeerTunIp"`
+	WGKeyExchangePort   uint32           `json:"wgKeyExchangePort"`
+	WGTCPCommsPort      uint32           `json:"wgTcpCommsPort"`
 	CanaryDomains       []string         `json:"canaryDomains"`
 	LimitDomainJoined   bool             `json:"limitDomainJoined"`
 	LimitDatetime       string           `json:"limitDatetime"`
@@ -3210,6 +3220,8 @@ func profileViewFromConfig(name string, cfg *clientpb.ImplantConfig) ProfileView
 	v.ReconnectInterval = cfg.ReconnectInterval / int64(time.Second)
 	v.MaxConnectionErrors, v.PollTimeout = cfg.MaxConnectionErrors, cfg.PollTimeout/int64(time.Second)
 	v.HTTPC2Profile, v.TemplateName = cfg.HTTPC2ConfigName, cfg.TemplateName
+	v.GoPackage, v.Extension = cfg.GoPackage, cfg.Extension
+	v.WGPeerTunIP, v.WGKeyExchangePort, v.WGTCPCommsPort = cfg.WGPeerTunIP, cfg.WGKeyExchangePort, cfg.WGTcpCommsPort
 	v.TrafficEncoders = append([]string(nil), cfg.TrafficEncoders...)
 	v.CanaryDomains = append([]string(nil), cfg.CanaryDomains...)
 	v.LimitDomainJoined, v.LimitDatetime = cfg.LimitDomainJoined, cfg.LimitDatetime
@@ -3270,6 +3282,8 @@ func (a *App) buildImplantConfig(req GenerateRequest) *clientpb.ImplantConfig {
 		TrafficEncodersEnabled: len(req.TrafficEncoders) > 0,
 		TrafficEncoders:        append([]string(nil), req.TrafficEncoders...),
 		TemplateName:           req.TemplateName,
+		GoPackage:              strings.TrimSpace(req.GoPackage),
+		Extension:              strings.TrimPrefix(strings.TrimSpace(req.Extension), "."),
 		CanaryDomains:          normalizeCanaryDomains(req.CanaryDomains),
 		LimitDomainJoined:      req.LimitDomainJoined,
 		LimitDatetime:          strings.TrimSpace(req.LimitDatetime),
@@ -3305,6 +3319,9 @@ func (a *App) buildImplantConfig(req GenerateRequest) *clientpb.ImplantConfig {
 			cfg.IncludeDNS = true
 		case "wg", "wireguard":
 			cfg.IncludeWG = true
+			cfg.WGPeerTunIP = strings.TrimSpace(req.WGPeerTunIP)
+			cfg.WGKeyExchangePort = req.WGKeyExchangePort
+			cfg.WGTcpCommsPort = req.WGTCPCommsPort
 		case "tcp", "tcp-pivot", "tcppivot":
 			cfg.IncludeTCP = true
 			cfg.IncludeMTLS = true

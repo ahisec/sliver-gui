@@ -128,6 +128,19 @@ func validateGenerateRequest(req GenerateRequest) []string {
 	if req.MetadataPath != "" && (req.GOOS != "windows" || req.Format == "shellcode") {
 		errors = append(errors, "executable metadata cloning only supports Windows PE outputs")
 	}
+	hasWireGuard := false
+	for _, c2 := range c2Entries {
+		scheme := strings.ToLower(schemeOf(c2.URL))
+		hasWireGuard = hasWireGuard || scheme == "wg" || scheme == "wireguard"
+	}
+	if hasWireGuard {
+		if req.WGPeerTunIP != "" && net.ParseIP(strings.TrimSpace(req.WGPeerTunIP)) == nil {
+			errors = append(errors, "WireGuard peer tunnel IP is invalid")
+		}
+		if req.WGKeyExchangePort > 65535 || req.WGTCPCommsPort > 65535 {
+			errors = append(errors, "WireGuard ports must be between 0 and 65535")
+		}
+	}
 	return errors
 }
 

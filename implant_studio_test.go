@@ -79,22 +79,28 @@ func TestBuildImplantConfigAdvancedProfile(t *testing.T) {
 		C2: []ImplantC2Input{
 			{URL: "https://one.example:443", Priority: 2, Options: "driver=winhttp"},
 			{URL: "dns://two.example", Priority: 1},
+			{URL: "wg://three.example:51820", Priority: 3},
 		},
 		Evasion: true, ObfuscateSymbols: true, NetGo: true, RunAtLoad: true,
+		GoPackage: "example.org/implant", Extension: ".bin",
+		WGPeerTunIP: "100.64.0.22", WGKeyExchangePort: 1337, WGTCPCommsPort: 8888,
 		ConnectionStrategy: "r", ReconnectInterval: 45, MaxConnectionErrors: 12, PollTimeout: 90,
 		CanaryDomains:     []string{"first.example, second.example.", "first.example"},
 		LimitDomainJoined: true, LimitDatetime: " 2027-01-01T00:00:00Z ",
 		LimitHostname: " host-a ", LimitUsername: " alice ", LimitFileExists: " C:\\ready ", LimitLocale: " en-US ",
 	}
 	cfg := (&App{}).buildImplantConfig(req)
-	if len(cfg.C2) != 2 || cfg.C2[0].Priority != 2 || cfg.C2[0].Options != "driver=winhttp" {
+	if len(cfg.C2) != 3 || cfg.C2[0].Priority != 2 || cfg.C2[0].Options != "driver=winhttp" {
 		t.Fatalf("unexpected C2 mapping: %+v", cfg.C2)
 	}
-	if !cfg.IncludeHTTP || !cfg.IncludeDNS || !cfg.Evasion || !cfg.ObfuscateSymbols || !cfg.NetGoEnabled || !cfg.RunAtLoad {
+	if !cfg.IncludeHTTP || !cfg.IncludeDNS || !cfg.IncludeWG || !cfg.Evasion || !cfg.ObfuscateSymbols || !cfg.NetGoEnabled || !cfg.RunAtLoad {
 		t.Fatalf("advanced flags were not mapped: %+v", cfg)
 	}
 	if cfg.ReconnectInterval != int64(45*time.Second) || cfg.PollTimeout != int64(90*time.Second) || cfg.MaxConnectionErrors != 12 {
 		t.Fatalf("connection settings were not mapped: %+v", cfg)
+	}
+	if cfg.GoPackage != "example.org/implant" || cfg.Extension != "bin" || cfg.WGPeerTunIP != "100.64.0.22" || cfg.WGKeyExchangePort != 1337 || cfg.WGTcpCommsPort != 8888 {
+		t.Fatalf("advanced build and WireGuard fields were not mapped: %+v", cfg)
 	}
 	if !reflect.DeepEqual(cfg.CanaryDomains, []string{"first.example.", "second.example."}) {
 		t.Fatalf("unexpected canary domains: %#v", cfg.CanaryDomains)
@@ -148,6 +154,7 @@ func TestProfileViewFromConfig(t *testing.T) {
 		Evasion: true, ObfuscateSymbols: true, NetGoEnabled: true,
 		BeaconInterval: 30 * int64(time.Second), BeaconJitter: 5 * int64(time.Second), IsBeacon: true,
 		LimitLocale: "en-US", CanaryDomains: []string{"canary.example."},
+		GoPackage: "example.org/profile", Extension: "dat", WGPeerTunIP: "100.64.0.4", WGKeyExchangePort: 1337, WGTcpCommsPort: 8888,
 	}
 	view := profileViewFromConfig("mac", cfg)
 	if view.Format != "shellcode" || view.C2URL != cfg.C2[0].URL || len(view.C2) != 1 || view.C2[0].Options != "x=y" {
@@ -155,5 +162,29 @@ func TestProfileViewFromConfig(t *testing.T) {
 	}
 	if !view.Evasion || !view.ObfuscateSymbols || !view.NetGo || view.Interval != 30 || view.Jitter != 5 {
 		t.Fatalf("advanced profile fields missing: %+v", view)
+	}
+	if view.GoPackage != cfg.GoPackage || view.Extension != cfg.Extension || view.WGPeerTunIP != cfg.WGPeerTunIP || view.WGKeyExchangePort != cfg.WGKeyExchangePort || view.WGTCPCommsPort != cfg.WGTcpCommsPort {
+		t.Fatalf("profile-only fields did not survive the view mapping: %+v", view)
+	}
+}
+
+func TestValidateGenerateRequestRejectsInvalidWireGuardFields(t *testing.T) {
+	req := GenerateRequest{
+		GOOS: "windows", GOARCH: "amd64", Format: "exe", C2URL: "wg://example.com:51820",
+		WGPeerTunIP: "not-an-ip", WGKeyExchangePort: 70000,
+	}
+	if errors := validateGenerateRequest(req); len(errors) != 2 {
+		t.Fatalf("got %d WireGuard validation errors, want 2: %v", len(errors), errors)
+	}
+}
+
+func TestBuildImplantConfigDropsWireGuardFieldsWithoutTransport(t *testing.T) {
+	app := NewApp()
+	cfg := app.buildImplantConfig(GenerateRequest{
+		GOOS: "windows", GOARCH: "amd64", Format: "exe", C2URL: "mtls://example.com:8888",
+		WGPeerTunIP: "100.64.0.22", WGKeyExchangePort: 1337, WGTCPCommsPort: 8888,
+	})
+	if cfg.IncludeWG || cfg.WGPeerTunIP != "" || cfg.WGKeyExchangePort != 0 || cfg.WGTcpCommsPort != 0 {
+		t.Fatalf("WireGuard-only fields leaked into a non-WireGuard profile: %+v", cfg)
 	}
 }

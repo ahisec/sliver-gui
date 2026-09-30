@@ -3844,6 +3844,8 @@ function profilesContent() {
             <div class="gen-field"><label>操作系统</label><select name="goos"><option value="windows">Windows</option><option value="linux">Linux</option><option value="darwin">macOS</option></select></div>
             <div class="gen-field"><label>架构</label><select name="goarch"><option value="amd64">amd64</option><option value="386">386</option><option value="arm64">arm64</option></select></div>
             <div class="gen-field"><label>模板名称</label><input name="templateName" placeholder="sliver"/></div>
+            <div class="gen-field"><label>Go 包路径</label><input name="goPackage" placeholder="留空使用 Teamserver 默认值"/></div>
+            <div class="gen-field"><label>输出扩展名</label><input name="extension" placeholder="例如 exe、dll；留空自动选择"/></div>
           </div>
           <div class="profile-checks">
             <label class="check-label"><input type="checkbox" name="debug"/> 调试模式</label>
@@ -3871,6 +3873,11 @@ function profilesContent() {
           <div class="http-c2-actions" id="prof-http-c2-actions">
             <button type="button" class="btn small" data-http-c2-action="view">查看</button><button type="button" class="btn small" data-http-c2-action="new">新建</button><button type="button" class="btn small" data-http-c2-action="import">导入</button><button type="button" class="btn small" data-http-c2-action="edit">编辑</button><button type="button" class="btn small" data-http-c2-action="validate">验证</button><button type="button" class="btn small" data-http-c2-action="refresh">刷新</button>
           </div>
+          <div class="profile-grid" id="prof-wg-fields">
+            <div class="gen-field"><label>WireGuard 隧道 IP</label><input name="wgPeerTunIp" placeholder="例如 100.64.0.10"/><span class="field-note">仅在 C2 包含 WireGuard 时提交。</span></div>
+            <div class="gen-field"><label>WireGuard 密钥交换端口</label><input name="wgKeyExchangePort" type="number" min="0" max="65535" value="0"/></div>
+            <div class="gen-field"><label>WireGuard TCP 通信端口</label><input name="wgTcpCommsPort" type="number" min="0" max="65535" value="0"/></div>
+          </div>
           <div class="gen-field"><label>Canary 域名（逗号或换行分隔）</label><textarea name="canaryDomains" rows="2" placeholder="canary.example.com"></textarea></div>
         </fieldset>
         <fieldset class="profile-section"><legend>执行限制</legend>
@@ -3883,6 +3890,7 @@ function profilesContent() {
             <div class="gen-field"><label>区域设置</label><input name="limitLocale" placeholder="en-US"/></div>
           </div>
         </fieldset>
+        <div class="task-note">字段覆盖：通用目标、C2、信标、连接、流量编码器、WireGuard、执行限制和常用构建字段可在此维护。服务器生成的 ID/构建关联为只读；Shellcode 编码细项、共享库导出和嵌入资产属于格式专用流程，不作为普通档案字段开放。</div>
         <div class="gen-row"><button type="submit" class="btn accent" id="prof-submit" style="margin-left:auto">保存配置档案</button></div>
         <div id="prof-msg" class="status-msg"></div>
       </form>
@@ -3905,8 +3913,10 @@ function parseProfileC2(value) {
 function wireProfileForm() {
   const f = document.getElementById('prof-form'); if (!f) return;
   const httpSelect = f.httpC2Profile, httpNote = document.getElementById('prof-http-c2-note');
+  const wgFields = [...document.querySelectorAll('#prof-wg-fields input')];
   const httpActions = [...document.querySelectorAll('[data-http-c2-action]')];
   const hasHTTPTransport = () => parseProfileC2(f.c2Entries.value).some(entry => /^https?:\/\//i.test(entry.url));
+  const hasWireGuardTransport = () => parseProfileC2(f.c2Entries.value).some(entry => /^(wg|wireguard):\/\//i.test(entry.url));
   const refreshHTTPProfiles = async preferred => {
     const current = preferred || httpSelect.value;
     httpSelect.innerHTML = '<option value="">正在读取 Teamserver...</option>';
@@ -3927,6 +3937,8 @@ function wireProfileForm() {
       const action = button.dataset.httpC2Action;
       button.disabled = ['view','edit','validate'].includes(action) && !httpSelect.value;
     });
+    const wireGuardEnabled = hasWireGuardTransport();
+    wgFields.forEach(input => { input.disabled = !wireGuardEnabled; });
   };
   f.c2Entries.addEventListener('input', updateHTTPState);
   httpSelect.addEventListener('change', updateHTTPState);
@@ -3964,7 +3976,7 @@ function wireProfileForm() {
     e.preventDefault();
     const c2 = parseProfileC2(f.c2Entries.value);
     const splitList = value => String(value || '').split(/[\r\n,]+/).map(v => v.trim()).filter(Boolean);
-    const req = { name:f.name.value.trim(), goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2, c2Url:c2[0]?.url||'', debug:f.debug.checked, evasion:f.evasion.checked, obfuscateSymbols:f.obfuscateSymbols.checked, netGo:f.netGo.checked, runAtLoad:f.runAtLoad.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0, connectionStrategy:f.connectionStrategy.value, reconnectInterval:parseInt(f.reconnectInterval.value)||0, maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0, pollTimeout:parseInt(f.pollTimeout.value)||0, httpC2Profile:hasHTTPTransport()?f.httpC2Profile.value:'', trafficEncoders:splitList(f.trafficEncoders.value), templateName:f.templateName.value.trim(), canaryDomains:splitList(f.canaryDomains.value), limitDomainJoined:f.limitDomainJoined.checked, limitDatetime:f.limitDatetime.value.trim(), limitHostname:f.limitHostname.value.trim(), limitUsername:f.limitUsername.value.trim(), limitFileExists:f.limitFileExists.value.trim(), limitLocale:f.limitLocale.value.trim() };
+    const req = { name:f.name.value.trim(), goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2, c2Url:c2[0]?.url||'', debug:f.debug.checked, evasion:f.evasion.checked, obfuscateSymbols:f.obfuscateSymbols.checked, netGo:f.netGo.checked, runAtLoad:f.runAtLoad.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0, connectionStrategy:f.connectionStrategy.value, reconnectInterval:parseInt(f.reconnectInterval.value)||0, maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0, pollTimeout:parseInt(f.pollTimeout.value)||0, httpC2Profile:hasHTTPTransport()?f.httpC2Profile.value:'', trafficEncoders:splitList(f.trafficEncoders.value), templateName:f.templateName.value.trim(), goPackage:f.goPackage.value.trim(), extension:f.extension.value.trim().replace(/^\./,''), wgPeerTunIp:hasWireGuardTransport()?f.wgPeerTunIp.value.trim():'', wgKeyExchangePort:hasWireGuardTransport()?(parseInt(f.wgKeyExchangePort.value)||0):0, wgTcpCommsPort:hasWireGuardTransport()?(parseInt(f.wgTcpCommsPort.value)||0):0, canaryDomains:splitList(f.canaryDomains.value), limitDomainJoined:f.limitDomainJoined.checked, limitDatetime:f.limitDatetime.value.trim(), limitHostname:f.limitHostname.value.trim(), limitUsername:f.limitUsername.value.trim(), limitFileExists:f.limitFileExists.value.trim(), limitLocale:f.limitLocale.value.trim() };
     const msg = document.getElementById('prof-msg');
     if (!c2.length) { msg.textContent = '请至少填写一条有效的 C2 URL'; msg.className = 'status-msg err'; return; }
     msg.textContent = '正在保存...'; msg.className = 'status-msg';
@@ -3990,8 +4002,8 @@ function editImplantProfile(name) {
   if (!p || !f) return toast('err', '未找到要编辑的配置档案');
   f.dataset.editing = name; f.name.value = p.name || ''; f.name.readOnly = true;
   ['goos','goarch','format','connectionStrategy','httpC2Profile'].forEach(key => { if (p[key] != null && f[key]) f[key].value = p[key]; });
-  ['templateName','limitDatetime','limitHostname','limitUsername','limitFileExists','limitLocale'].forEach(key => { if (f[key]) f[key].value = p[key] || ''; });
-  ['interval','jitter','reconnectInterval','maxConnectionErrors','pollTimeout'].forEach(key => { if (f[key]) f[key].value = p[key] ?? 0; });
+  ['templateName','goPackage','extension','wgPeerTunIp','limitDatetime','limitHostname','limitUsername','limitFileExists','limitLocale'].forEach(key => { if (f[key]) f[key].value = p[key] || ''; });
+  ['interval','jitter','reconnectInterval','maxConnectionErrors','pollTimeout','wgKeyExchangePort','wgTcpCommsPort'].forEach(key => { if (f[key]) f[key].value = p[key] ?? 0; });
   ['debug','evasion','obfuscateSymbols','netGo','runAtLoad','beacon','limitDomainJoined'].forEach(key => { if (f[key]) f[key].checked = !!p[key]; });
   f.c2Entries.value = (p.c2 || []).map((entry, index) => `${entry.priority || index + 1} | ${entry.url}${entry.options ? ` | ${entry.options}` : ''}`).join('\n') || p.c2Url || '';
   f.trafficEncoders.value = (p.trafficEncoders || []).join(', '); f.canaryDomains.value = (p.canaryDomains || []).join(', ');

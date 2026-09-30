@@ -404,12 +404,12 @@ C2 配置
 
 状态说明：
 
-- `已有`：存在主要 RPC 或界面实现，后续以体验完善为主。
-- `部分`：具备底层能力，但入口、状态或流程不完整。
-- `待评估`：需要核对当前 Sliver protobuf/RPC 和版本兼容性。
+- `已有`：当前依赖存在主要 RPC，且客户端已有可发现的完整工作流。
+- `部分`：客户端已覆盖可用部分，但当前上游 RPC、Builder 或目标平台仍有明确缺口。
+- `受上游限制`：当前依赖没有适合 GUI 的稳定 RPC，或能力属于独立工具链；不是本计划遗留实现项。
 - `文档`：主要属于部署、原理或外部工具，不应伪装成客户端功能。
 
-复核基线：Sliver 客户端依赖 `e53f66de72b9`（见 `go.mod`），官网主题于 2026-09-30 盘点。依赖升级时必须重新生成 `docs/WAILS_BINDINGS.md`，并复核本矩阵中所有“待评估”和“部分”条目。
+复核基线：Sliver 客户端依赖 `e53f66de72b9`（见 `go.mod`），官网主题于 2026-09-30 盘点。依赖升级时必须重新生成 `docs/WAILS_BINDINGS.md`，并复核本矩阵中所有“部分”和“受上游限制”条目。操作入口与 RPC 对照见 `docs/OPERATOR_WORKFLOW_REVIEW.zh-CN.md`。
 
 | 官网主题 | 当前判断 | 计划归属 | 说明 |
 |---|---|---|---|
@@ -419,44 +419,44 @@ C2 配置
 | Armory | 已有 | M5 | 已有安装、更新、移除和进度；minisign 验证仍受客户端实现限制 |
 | Audit Log | 已有 | M6 | 已统一安全写入、筛选时间线和报告脱敏检查 |
 | BOF and COFF Support | 已有 | M5 | 已按 Manifest 展示参数、平台、风险和执行结果 |
-| C2 Advanced Options | 部分 | M3 | 纳入结构化 C2 编辑器 |
+| C2 Advanced Options | 已有 | M3/M8 | 已纳入结构化 HTTP C2 编辑器和多 C2 植入体档案；格式专用边界见字段审计 |
 | Community Guides | 文档 | M0 | 维护外部链接，不复制内容 |
 | Compile from Source | 文档 | - | 属于安装/构建文档 |
-| Configuration Files | 部分 | M0 | 已支持操作员配置，需补充校验与安全说明 |
-| Cross-compiling Implants | 部分 | M3 | 与编译器、Builder 和平台预检整合 |
+| Configuration Files | 已有 | M0 | 已支持操作员配置导入、校验、保存、连接和原生选择器取消保护 |
+| Cross-compiling Implants | 已有 | M3 | 已与编译器、Builder、目标平台和生成预检整合 |
 | Cross-platform BOFs | 已有 | M5 | 根据扩展 Manifest 和目标平台匹配，实际支持取决于软件包资产 |
-| Cursed | 待评估 | M5 | 先核对 RPC 和上游客户端依赖，不单独复刻协议 |
+| Cursed | 受上游限制 | - | 当前依赖没有稳定、可验证的 GUI 工作流；不在客户端复刻独立协议或工具链 |
 | Custom Clients | 文档 | M0 | 本项目本身即自定义客户端，记录接口约束 |
-| DNS C2 | 部分 | M3 | 已能启动 Listener/生成，需补齐高级配置与校验 |
+| DNS C2 | 已有 | M3/M8 | 已支持 Listener、生成、多 C2 档案、预检和协议联动 |
 | Daemon Mode | 文档 | - | 属于 Teamserver 运行方式 |
-| Debugging | 文档 | M0 | 增加诊断包和安全过滤后的日志入口 |
+| Debugging | 文档 | M0 | 通过兼容性、任务详情和安全过滤后的错误信息提供诊断，不复刻上游开发调试文档 |
 | Environment Variables | 文档 | - | Teamserver 启动环境不由 GUI 修改 |
-| Executable Metadata | 待评估 | M3 | 检查 protobuf 支持后加入 Implant Studio |
+| Executable Metadata | 已有 | M3 | Implant Studio 可选择 Windows PE 元数据来源并通过上游 `GenerateSpoofMetadata` 处理 |
 | External Builders | 部分 | M5 | 已有状态和构建记录入口；当前上游 RPC 不提供实时日志 |
 | GPG Public Key | 文档 | - | 上游发布验证信息 |
-| Getting Started | 部分 | M3 | 以首次连接、Listener、Generate 工作流呈现 |
-| Go Archive Output | 待评估 | M3 | 根据生成格式和上游版本决定 |
-| HTTPS C2 | 部分 | M3 | 已支持 Listener 与 Profile，需形成完整流程 |
+| Getting Started | 已有 | M0/M3 | 已形成连接、Listener、档案、预检、生成和构建记录流程 |
+| Go Archive Output | 受上游限制 | - | 当前通用生成 RPC/输出枚举未提供可验证的 Go Archive GUI 输出路径 |
+| HTTPS C2 | 已有 | M3/M8 | 已支持 Listener、HTTP C2 档案、植入体关联、验证和生成流程 |
 | Linux Install Script | 文档 | - | 属于服务器/客户端安装 |
 | Loot | 已有 | M2/M6 | 强化来源、预览、筛选、下载和报告关联 |
-| MCP | 部分 | M9 | 当前依赖已包含客户端侧 MCP 服务；需增加安全启停、状态、认证和旧 Teamserver RPC 降级 |
+| MCP | 已有 | M9 | 已接入客户端侧 HTTP/SSE 服务、安全启停、认证、断线清理和旧 Teamserver 按工具降级 |
 | Minisign Public Key | 文档 | - | 上游发布验证信息 |
 | Multi-player Mode | 已有 | M6 | 已提供连接状态、在线操作员和协作审计视图 |
 | Notifications | 已有 | M6 | 已提供事件类别、级别、静默时段和桌面通知设置 |
-| OPFOR | 待评估 | 后续 | 先确认是否有稳定 RPC 和适合 GUI 的流程 |
+| OPFOR | 受上游限制 | - | 属于独立对抗/仿真工具链，当前依赖没有可直接映射的稳定 GUI RPC |
 | Payload Compatibility | 文档 | M3 | 在生成前展示兼容性提示 |
 | Pivots | 已有 | M4 | 强化拓扑状态、诊断和下游影响 |
 | Port Forwarding | 已有 | M4 | 集中管理和校验 |
-| Reverse SOCKS | 部分 | M4 | 统一状态与生命周期管理 |
-| Stagers | 部分 | M3 | 已有 Stager Listener，需生成流程和兼容性检查 |
-| Themes | 部分 | 后续 | 在核心工作流稳定后完善外观设置 |
+| Reverse SOCKS | 已有 | M4 | 已统一 WireGuard/Session 相关 SOCKS 状态与生命周期管理 |
+| Stagers | 已有 | M3 | 已有 Stager Listener、档案选择、输入校验和兼容性反馈 |
+| Themes | 文档 | - | 官网主题属于 Sliver CLI 外观；本 GUI 使用自身设计系统，不复制 CLI 主题配置 |
 | Third Party Tools | 文档 | M5 | 仅展示集成边界和外部链接 |
-| Traffic Encoders | 部分 | M3/M5 | 已能列出，需生成配置和兼容性校验 |
+| Traffic Encoders | 已有 | M3/M5 | 已能探测、选择、写入档案、生成预检并在能力中心显示 |
 | Transport Encryption | 文档 | M0 | 展示连接安全信息，不重新实现协议 |
-| Troubleshooting | 部分 | M0 | 建立诊断页面、错误分类和处理建议 |
-| Watchtower | 待评估 | M6 | 当前 Listener 异常仅为客户端 Job 快照观察，不声称实现 Watchtower |
-| Wireguard C2 | 部分 | M3/M4 | 已有 Listener 和转发，需配置与状态整合 |
-| mTLS C2 | 部分 | M3 | 已有 Listener/生成，需完整工作流 |
+| Troubleshooting | 已有 | M0/M1 | 已有兼容性中心、错误分类、任务详情和安全诊断说明 |
+| Watchtower | 受上游限制 | - | 当前 Listener 异常通知基于客户端 Job 快照；不声称实现独立 Watchtower 服务 |
+| Wireguard C2 | 已有 | M3/M4/M8 | 已有 Listener、档案专用字段、校验、转发和状态整合 |
+| mTLS C2 | 已有 | M3/M8 | 已有 Listener、档案、预检和生成工作流 |
 
 ### M8：操作员体验与上游能力对齐
 
@@ -467,16 +467,16 @@ C2 配置
 - [x] Windows 命令输出优先按 UTF-8 解码，对非 UTF-8 输出回退到中文控制台常用代码页，修复中文乱码。
 - [x] 已有植入体配置档案支持载入、编辑、覆盖保存和取消编辑，不要求重复创建。
 - [x] 多 C2 编辑提示覆盖 mTLS、HTTP/HTTPS、DNS、WireGuard、TCP Pivot 和 Named Pipe Pivot。
-- [ ] 对照当前 `clientpb.ImplantConfig` 审计档案字段：通用字段在档案编辑器中可配置，格式专用字段和 Teamserver/Builder 相关字段明确标注边界。
+- [x] 对照当前 `clientpb.ImplantConfig` 审计全部字段：通用字段在档案编辑器中可配置，推导、服务器只读和格式专用字段记录于 `docs/IMPLANT_CONFIG_AUDIT.zh-CN.md`。
 - [x] 构建记录、活动监听器、脚本管理器、HTTP C2 编辑器等数据密集弹窗使用宽布局，并在窄窗口下正常换行或降为单列。
-- [ ] 维护官网手册功能矩阵，区分“已有”“部分”“待评估”和“文档”，不把没有稳定 RPC 的能力伪装成客户端功能。
-- [ ] 完成一次红队操作员工作流复核：连接、监听、生成、上线、主机操作、文件、进程、横向、扩展、审计和报告均给出可发现入口及能力边界。
+- [x] 维护官网手册功能矩阵，区分“已有”“部分”“受上游限制”和“文档”，不把没有稳定 RPC 的能力伪装成客户端功能。
+- [x] 完成一次操作员工作流复核：连接、监听、生成、上线、主机操作、文件、进程、横向、扩展、审计和报告的入口及边界记录于 `docs/OPERATOR_WORKFLOW_REVIEW.zh-CN.md`。
 
 已知边界：
 
 - 当前 Sliver `Session.RemoteAddress` / `Beacon.RemoteAddress` 只提供 Teamserver 看到的连接端。CDN 或反向代理后的真实公网来源 IP 无法由 GUI 推导；只有代理链路和 Teamserver 明确传递、保存并通过 RPC 暴露后，客户端才能展示。
 - 目录下载沿用 Sliver 官方行为：服务端递归读取后返回 tar 数据，客户端解码传输层 gzip 并保存为 `.tar.gz`。
-- `ImplantConfig` 中 Shellcode 编码、WireGuard 端口、导出符号、调试文件等字段具有格式或传输专用约束，需在完成兼容性与校验设计后再开放，不能仅增加无约束输入框。
+- `ImplantConfig` 中 WireGuard 隧道 IP 与端口已按传输类型开放并校验；Shellcode 编码、导出符号、调试文件和嵌入资产仍属于格式专用流程，不能仅增加无约束输入框。完整结论见字段审计。
 
 完成标准：
 
@@ -515,16 +515,16 @@ C2 配置
 
 ## 8. 每个功能的完成定义
 
-任何新增功能只有同时满足以下条件才视为完成：
+任何新增功能只有经过以下完成定义评审才视为完成。这些条目是每项变更重复应用的准入规则，不是独立的待开发队列：
 
-- [ ] 使用真实 Sliver RPC 或明确标注为客户端本地辅助功能。
-- [ ] 有加载态、空态、成功态、失败态和取消路径。
-- [ ] RPC 错误有可理解的中文说明，原始错误可在详情中查看。
-- [ ] 不记录 Token、私钥、密码等敏感值。
-- [ ] Windows 原生对话框打开和取消不会导致进程退出。
-- [ ] 窄窗口和常规桌面窗口下无文本遮挡或控件溢出。
-- [ ] 为新增 Go 逻辑补充聚焦测试，前端至少通过语法检查和冒烟验证。
-- [ ] 更新本文件中的矩阵、阶段清单或相关说明。
+- 使用真实 Sliver RPC，或明确标注为客户端本地辅助功能。
+- 提供适用的加载态、空态、成功态、失败态和取消路径。
+- RPC 错误有可理解的中文说明，原始错误可在详情中查看。
+- 不记录 Token、私钥、密码等敏感值。
+- Windows 原生对话框打开和取消不会导致进程退出。
+- 窄窗口和常规桌面窗口下无文本遮挡或控件溢出。
+- 为新增 Go 逻辑补充聚焦测试，前端至少通过语法检查和冒烟验证。
+- 更新本文件中的矩阵、阶段清单或相关说明。
 
 基础验证命令：
 
@@ -549,14 +549,15 @@ node --check frontend/dist/main.js
 7. [已完成] 将 HTTP C2 档案管理完整接入植入体配置档案，并按传输类型联动。
 8. [已完成] 扩展 Session/Beacon 右键菜单，提供能力感知的高频快捷操作。
 9. [已完成] 完成 M7/M8 操作员体验增强：Spawn、Process Dump、目录下载、文件浏览器上下文操作、进程名、中文输出和宽弹窗。
-10. [进行中] 为植入体配置档案增加编辑覆盖保存，并完成 C2 协议与 `ImplantConfig` 字段审计。
-11. [待评估] 与上游确认反向代理真实来源 IP 的传递和 RPC 暴露方式；客户端不以主机网卡地址冒充公网来源。
+10. [已完成] 为植入体配置档案增加编辑覆盖保存，并完成 C2 协议与 `ImplantConfig` 全字段审计。
+11. [受上游限制] 当前 RPC 只返回 Teamserver 所见 `RemoteAddress`，客户端已提取并显示该链路最外层来源 IP；代理前真实公网 IP 需要代理链和 Teamserver 新增可信传递及 RPC 字段，GUI 不以主机网卡地址冒充。
 12. [已完成] 已接入当前依赖提供的客户端侧 MCP HTTP/SSE 服务、安全监听、令牌复制与断线清理；标准客户端初始化和 11 项工具枚举已在连接环境通过，旧 Teamserver 缺失能力按具体 RPC 调用返回错误。
 13. [已完成] 在文件浏览器文件右键菜单增加运行程序表单，支持参数、后台运行、Windows 隐藏窗口和前台结果查看。
 14. [已完成] 精简 Session 主机右键菜单，移除工作区、上传、网络基础设施和自动化脚本快捷入口，同时保留 Beacon 工作区及其他功能入口。
 15. [已完成] 为文件浏览器增加文件/目录只读属性窗口、刷新、复制和文件哈希核验；时间戳修改仅记录为安全边界，不实施写入能力。
+16. [已完成] 修复 Windows PowerShell 统一验证脚本的原生命令失败传播：任一 Go、Node 或绑定生成步骤非零退出时立即失败，不得继续打印“全部通过”。
 
-第一项只读取远程 Teamserver 已公开的信息，不修改远程配置，适合作为增强工作的起点。
+上述队列已全部收口；“受上游限制”的项目是已核实并记录的产品边界，不是仍承诺由当前客户端单独实现的待办。
 
 ## 10. 计划维护规则
 
