@@ -443,9 +443,9 @@ function renderTable() {
     const tr = document.createElement('tr'); tr.dataset.id = o.id; tr.dataset.kind = kind;
     if (isPrivileged(o) && !o.isDead) tr.classList.add('row-priv');
     const typeCls = kind === 'session' ? 'type-session' : 'type-beacon';
-    const remoteIP = o.remoteAddress ? o.remoteAddress.replace(/^\[([^\]]+)\](?::\d+)?$/, '$1').replace(/:\d+$/, '') : '-';
+    const remoteIP = RemoteAddress.sourceIP(o.remoteAddress);
     const process = o.processName ? `<small class="agent-process-name" title="${esc(o.processName)}">${esc(o.processName)}</small>` : '';
-    tr.innerHTML = `<td class="${typeCls}">${kind === 'session' ? '会话' : '信标'}</td><td>${esc(o.name||o.id.slice(0,8))}</td><td>${esc(o.hostname)}</td>${userCell(o)}<td title="Teamserver 看到的连接端地址">${esc(remoteIP)}</td><td>${esc(o.os)}/${esc(o.arch)}</td><td><span>${o.pid}</span>${process}</td><td>${esc(o.transport)}</td><td>${esc(o.lastCheckin)}</td><td class="${o.isDead?'status-dead':'status-alive'}">${o.isDead?'离线':'在线'}</td>`;
+    tr.innerHTML = `<td class="${typeCls}">${kind === 'session' ? '会话' : '信标'}</td><td>${esc(o.name||o.id.slice(0,8))}</td><td>${esc(o.hostname)}</td>${userCell(o)}<td title="${esc(o.remoteAddress || 'Teamserver 未提供连接来源')}">${esc(remoteIP)}</td><td>${esc(o.os)}/${esc(o.arch)}</td><td><span>${o.pid}</span>${process}</td><td>${esc(o.transport)}</td><td>${esc(o.lastCheckin)}</td><td class="${o.isDead?'status-dead':'status-alive'}">${o.isDead?'离线':'在线'}</td>`;
     tr.addEventListener('dblclick', () => openInteract(kind, o));
     tr.addEventListener('contextmenu', e => showCtx(e, kind, o));
     body.appendChild(tr);

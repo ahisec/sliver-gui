@@ -78,7 +78,7 @@
         <div class="table-wrap">
           <table class="data-table" id="agents-table">
             <thead><tr>
-              <th>类型</th><th>名称 / ID</th><th>主机</th><th>用户</th><th title="Teamserver 看到的连接端地址">连接来源</th><th>系统/架构</th>
+              <th>类型</th><th>名称 / ID</th><th>主机</th><th>用户</th><th title="Teamserver 提供的最外层连接来源 IP">连接来源</th><th>系统/架构</th>
               <th>PID / 进程</th><th>传输协议</th><th>最后回连</th><th>状态</th>
             </tr></thead>
             <tbody id="agents-body"></tbody>
@@ -169,6 +169,7 @@
 <script src="./task-store.js"></script>
 <script src="./command-completion.js"></script>
 <script src="./notification-rules.js"></script>
+<script src="./remote-address.js"></script>
 <script src="./main.js"></script>
 </body>
 </html>

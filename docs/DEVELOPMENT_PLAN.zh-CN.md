@@ -291,6 +291,7 @@ C2 配置
 - [x] 进程浏览器增加 Process Dump，文件浏览器支持将整个目录下载为 `.tar.gz`。
 - [x] 重构文件浏览器为全宽列表：移除右侧预览窗，增加修改时间列，并为文件/目录右键提供下载、删除，为当前目录提供上传入口。
 - [x] Session/Beacon 表格在 PID 下显示植入体进程名，并明确 `RemoteAddress` 是 Teamserver 看到的连接来源而非代理前公网 IP。
+- [x] Session/Beacon 表格的“连接来源”直接展示 `RemoteAddress` 链路中 Teamserver 提供的最外层来源 IP，隐藏 `tcp(...)`、箭头和端口；无法解析时保留安全回退值。
 
 完成标准：
 
