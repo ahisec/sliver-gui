@@ -157,6 +157,24 @@ type ProcessBrowserResult struct {
 	Error     string         `json:"error,omitempty"`
 }
 
+func fullProcessListRequest(sessionID string) *sliverpb.PsReq {
+	return &sliverpb.PsReq{
+		FullInfo: true,
+		Request:  &commonpb.Request{SessionID: sessionID},
+	}
+}
+
+func processEntryView(process *commonpb.Process, sessionID string) ProcessEntry {
+	return ProcessEntry{
+		PID:        process.Pid,
+		PPID:       process.Ppid,
+		Executable: process.Executable,
+		Owner:      process.Owner,
+		Arch:       process.Architecture,
+		SessionID:  sessionID,
+	}
+}
+
 // ProcessBrowserList lists all processes for the visual process browser.
 func (a *App) ProcessBrowserList(sessionID string) ProcessBrowserResult {
 	client, err := a.requireClient()
@@ -165,23 +183,17 @@ func (a *App) ProcessBrowserList(sessionID string) ProcessBrowserResult {
 	}
 	a.audit.log("process-browse", sessionID, "")
 
-	resp, err := client.RPC.Ps(a.ctx, &sliverpb.PsReq{
-		Request: &commonpb.Request{SessionID: sessionID},
-	})
+	resp, err := client.RPC.Ps(a.ctx, fullProcessListRequest(sessionID))
 	if err != nil {
 		return ProcessBrowserResult{Error: err.Error()}
+	}
+	if resp.Response != nil && resp.Response.Err != "" {
+		return ProcessBrowserResult{Error: resp.Response.Err}
 	}
 
 	procs := make([]ProcessEntry, 0, len(resp.Processes))
 	for _, p := range resp.Processes {
-		procs = append(procs, ProcessEntry{
-			PID:        p.Pid,
-			PPID:       p.Ppid,
-			Executable: p.Executable,
-			Owner:      p.Owner,
-			Arch:       p.Architecture,
-			SessionID:  sessionID,
-		})
+		procs = append(procs, processEntryView(p, sessionID))
 	}
 	return ProcessBrowserResult{Processes: procs}
 }

@@ -4599,6 +4599,7 @@ async function openProcessBrowser(sessionID) {
     let html = `<div class="proc-browser">
       <div class="proc-toolbar">
         <input class="proc-search" id="proc-filter-${dockId}" type="text" placeholder="🔍 筛选进程..." />
+        <span class="proc-full-info" title="Sliver 完整进程枚举在部分 Windows 环境中可能被 EDR 监测">完整信息 · 注意 EDR</span>
         <button class="proc-tb-btn" id="proc-refresh-${dockId}">🔄 刷新</button>
         <button class="proc-tb-btn danger" id="proc-kill-btn-${dockId}">☠️ 终止</button>
         <button class="proc-tb-btn" id="proc-dump-btn-${dockId}">💾 转储</button>
@@ -4612,6 +4613,8 @@ async function openProcessBrowser(sessionID) {
     allProcs.forEach(p => {
       const icon = procIcon(p.executable, p.owner);
       const o = (p.owner || '').toLowerCase();
+      const owner = ProcessMetadata.displayProcessMetadata(p.owner, '所有者');
+      const arch = ProcessMetadata.displayProcessMetadata(p.arch, '架构');
       const isSystem = o.includes('system') || o.includes('local service') || o.includes('network service');
       const isSelf = p.sessionID === sessionID && (p.executable || '').toLowerCase().includes('implant'); // heuristic
       const cls = isSystem ? 'proc-item proc-system' : (isSelf ? 'proc-item proc-highlight' : 'proc-item');
@@ -4620,8 +4623,8 @@ async function openProcessBrowser(sessionID) {
         <span class="proc-pid">${p.pid}</span>
         <span class="proc-pid">${p.ppid}</span>
         <span class="proc-exe">${esc(p.executable)}</span>
-        <span class="proc-owner">${esc(p.owner || '')}</span>
-        <span class="proc-arch">${esc(p.arch || '')}</span>
+        <span class="proc-owner${owner.available ? '' : ' unavailable'}" title="${esc(owner.title)}">${esc(owner.text)}</span>
+        <span class="proc-arch${arch.available ? '' : ' unavailable'}" title="${esc(arch.title)}">${esc(arch.text)}</span>
       </div>`;
     });
 

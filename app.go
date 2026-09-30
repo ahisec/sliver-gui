@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -471,11 +472,12 @@ func (a *App) GetProcessList(sessionID string) ([]ProcessView, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := client.RPC.Ps(a.ctx, &sliverpb.PsReq{
-		Request: &commonpb.Request{SessionID: sessionID},
-	})
+	resp, err := client.RPC.Ps(a.ctx, fullProcessListRequest(sessionID))
 	if err != nil {
 		return nil, err
+	}
+	if resp.Response != nil && resp.Response.Err != "" {
+		return nil, errors.New(resp.Response.Err)
 	}
 	out := make([]ProcessView, 0, len(resp.Processes))
 	for _, p := range resp.Processes {
