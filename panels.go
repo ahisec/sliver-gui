@@ -33,6 +33,67 @@ type FileBrowserResult struct {
 	Error string      `json:"error,omitempty"`
 }
 
+type FileSystemMount struct {
+	VolumeName   string `json:"volumeName"`
+	VolumeType   string `json:"volumeType"`
+	MountPoint   string `json:"mountPoint"`
+	Label        string `json:"label"`
+	FileSystem   string `json:"fileSystem"`
+	UsedSpace    uint64 `json:"usedSpace"`
+	FreeSpace    uint64 `json:"freeSpace"`
+	TotalSpace   uint64 `json:"totalSpace"`
+	MountOptions string `json:"mountOptions"`
+}
+
+type FileSystemMountsResult struct {
+	Mounts []FileSystemMount `json:"mounts"`
+	Error  string            `json:"error,omitempty"`
+}
+
+func fileSystemMountView(info *sliverpb.MountInfo) FileSystemMount {
+	return FileSystemMount{
+		VolumeName:   info.VolumeName,
+		VolumeType:   info.VolumeType,
+		MountPoint:   info.MountPoint,
+		Label:        info.Label,
+		FileSystem:   info.FileSystem,
+		UsedSpace:    info.UsedSpace,
+		FreeSpace:    info.FreeSpace,
+		TotalSpace:   info.TotalSpace,
+		MountOptions: info.MountOptions,
+	}
+}
+
+// FileBrowserMounts returns the implant's mounted filesystems using Sliver's
+// structured Mount RPC. Older Teamservers may report this RPC as unavailable.
+func (a *App) FileBrowserMounts(sessionID string) FileSystemMountsResult {
+	client, err := a.requireClient()
+	if err != nil {
+		return FileSystemMountsResult{Error: err.Error()}
+	}
+	a.audit.log("file-mounts", sessionID, "")
+	resp, err := client.RPC.Mount(a.ctx, &sliverpb.MountReq{
+		Request: &commonpb.Request{SessionID: sessionID},
+	})
+	if err != nil {
+		return FileSystemMountsResult{Error: err.Error()}
+	}
+	if resp == nil {
+		return FileSystemMountsResult{Error: "teamserver returned an empty mount response"}
+	}
+	if resp.Response != nil && resp.Response.Err != "" {
+		return FileSystemMountsResult{Error: resp.Response.Err}
+	}
+	mounts := make([]FileSystemMount, 0, len(resp.Info))
+	for _, info := range resp.Info {
+		if info == nil || strings.TrimSpace(info.MountPoint) == "" {
+			continue
+		}
+		mounts = append(mounts, fileSystemMountView(info))
+	}
+	return FileSystemMountsResult{Mounts: mounts}
+}
+
 // FileBrowserList lists files at a path for the visual file browser.
 func (a *App) FileBrowserList(sessionID, path string) FileBrowserResult {
 	client, err := a.requireClient()

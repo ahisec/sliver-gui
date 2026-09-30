@@ -4358,6 +4358,7 @@ async function openFileBrowser(sessionID) {
     return p.split('/').filter(Boolean);
   }
   function joinPath(parts) { return parts.length ? parts.join('/') : '.'; }
+  function isRootPath(path) { return path === '/' || /^[a-z]:[\\/]?$/i.test((path || '').trim()); }
   function childPath(dir, name) {
     if (!dir || dir === '.') return name;
     const separator = dir.includes('\\') && !dir.includes('/') ? '\\' : '/';
@@ -4372,6 +4373,37 @@ async function openFileBrowser(sessionID) {
   const history = [];
   let histIdx = -1;
   let currentPath = '.';
+  let mounts = [];
+  let mountsError = '';
+  let mountsExpanded = true;
+
+  function mountTypeLabel(type) {
+    return ({ '2':'可移动设备', '3':'本地磁盘', '4':'网络驱动器', '5':'光驱', '6':'内存盘' })[String(type)] || '挂载点';
+  }
+
+  function formatDiskSize(bytes) {
+    return Number(bytes) > 0 ? fmtSize(Number(bytes)) : '未知';
+  }
+
+  async function loadMounts() {
+    const result = await App().FileBrowserMounts(sessionID).catch(error => ({ error }));
+    mounts = result.mounts || [];
+    mountsError = result.error ? rpcErrorMessage(result.error, '当前 Teamserver 不支持读取磁盘列表') : '';
+  }
+
+  function renderMounts() {
+    if (!mountsExpanded) return '';
+    if (mountsError) return `<div class="fb-drives fb-drives-message"><span>${esc(mountsError)}</span><button class="btn small" data-mount-refresh>重试</button></div>`;
+    if (!mounts.length) return '<div class="fb-drives fb-drives-message"><span>目标未返回可用的磁盘或挂载点</span><button class="btn small" data-mount-refresh>刷新</button></div>';
+    const items = mounts.map(mount => {
+      const label = mount.label ? ` ${mount.label}` : '';
+      const detail = [mountTypeLabel(mount.volumeType), mount.fileSystem, `可用 ${formatDiskSize(mount.freeSpace)}`].filter(Boolean).join(' · ');
+      return `<button class="fb-drive" type="button" data-mount-path="${esc(mount.mountPoint)}" title="${esc(mount.volumeName || mount.mountPoint)}">
+        <span class="fb-drive-icon">▰</span><span><strong>${esc(mount.mountPoint)}${esc(label)}</strong><small>${esc(detail)}</small></span>
+      </button>`;
+    }).join('');
+    return `<div class="fb-drives"><div class="fb-drive-list">${items}</div><button class="fb-drive-refresh" type="button" data-mount-refresh title="刷新磁盘列表">刷新</button></div>`;
+  }
 
   async function uploadToCurrentDirectory() {
     const result = await runFileTransfer('upload', sessionID, currentPath, { toDirectory: true });
@@ -4432,7 +4464,8 @@ async function openFileBrowser(sessionID) {
     const parts = splitPath(currentPath);
     let crumbs = '';
     for (let i = 0; i < parts.length; i++) {
-      const partial = joinPath(parts.slice(0, i + 1));
+      let partial = joinPath(parts.slice(0, i + 1));
+      if (i === 0 && /^[a-z]:$/i.test(partial)) partial += '/';
       crumbs += `<span class="fb-crumb" data-nav="${esc(partial)}">${esc(parts[i])}</span>`;
       if (i < parts.length - 1) crumbs += '<span class="fb-sep">›</span>';
     }
@@ -4448,11 +4481,13 @@ async function openFileBrowser(sessionID) {
       <div class="fb-toolbar">
         <button class="fb-nav-btn" id="fb-back-${dockId}" title="后退"${histIdx <= 0 ? ' disabled' : ''}>◀</button>
         <button class="fb-nav-btn" id="fb-fwd-${dockId}" title="前进"${histIdx >= history.length - 1 ? ' disabled' : ''}>▶</button>
-        <button class="fb-nav-btn" id="fb-up-${dockId}" title="上一级">⬆</button>
+        <button class="fb-nav-btn" id="fb-up-${dockId}" title="上一级"${isRootPath(currentPath) ? ' disabled' : ''}>⬆</button>
         <button class="fb-nav-btn" id="fb-refresh-${dockId}" title="刷新">🔄</button>
+        <button class="fb-mount-btn${mountsExpanded ? ' active' : ''}" id="fb-mounts-${dockId}" type="button" title="显示磁盘和挂载点">磁盘</button>
         <div class="fb-addressbar">${crumbs || '<span class="fb-crumb" style="color:var(--muted)">.</span>'}</div>
         <button class="fb-nav-btn fb-upload-btn" id="fb-upload-${dockId}" title="上传文件到当前目录">⬆</button>
       </div>
+      ${renderMounts()}
       <div class="fb-body">
         <div class="fb-col-header">
           <span></span><span>名称</span><span style="text-align:right">大小</span><span>修改时间</span><span>权限</span>
@@ -4486,6 +4521,9 @@ async function openFileBrowser(sessionID) {
     container.querySelector(`#fb-up-${dockId}`)?.addEventListener('click', () => { renderDir(currentPath + '/..'); });
     container.querySelector(`#fb-refresh-${dockId}`)?.addEventListener('click', () => { renderDir(currentPath, false); });
     container.querySelector(`#fb-upload-${dockId}`)?.addEventListener('click', uploadToCurrentDirectory);
+    container.querySelector(`#fb-mounts-${dockId}`)?.addEventListener('click', () => { mountsExpanded = !mountsExpanded; renderDir(currentPath, false); });
+    container.querySelectorAll('[data-mount-path]').forEach(button => button.addEventListener('click', () => renderDir(button.dataset.mountPath)));
+    container.querySelectorAll('[data-mount-refresh]').forEach(button => button.addEventListener('click', async () => { await loadMounts(); renderDir(currentPath, false); }));
     container.querySelectorAll('.fb-crumb[data-nav]').forEach(c => c.addEventListener('click', () => renderDir(c.dataset.nav)));
     container.querySelector(`#fb-list-${dockId}`)?.addEventListener('contextmenu', event => {
       if (!event.target.closest('.fb-item')) showFileContextMenu(event, null);
@@ -4508,6 +4546,7 @@ async function openFileBrowser(sessionID) {
       });
     });
   }
+  await loadMounts();
   renderDir(currentPath);
 }
 
