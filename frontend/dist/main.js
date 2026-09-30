@@ -2290,32 +2290,65 @@ function encodeB64(str){ return btoa(unescape(encodeURIComponent(str))); }
 function decodeB64(b64){ return decodeURIComponent(escape(atob(b64))); }
 
 // ── Toolbar nav (views in bottom panel for non-agent views) ────────────────
-document.querySelectorAll('.tb-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const view = btn.dataset.view;
-    document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    if (view === 'sessions' || view === 'beacons') { hideModal(); selectAgentList(view); refreshAgents(); return; }
-    if (view === 'listeners') openListenersPanel();
-    if (view === 'tasks') openTaskCenter();
-    if (view === 'generate') openGeneratePanel();
-    if (view === 'builds') openBuildsPanel();
-    if (view === 'profiles') openProfilesPanel();
-    if (view === 'events') openEventsPanel();
-    if (view === 'loot') openLootPanel();
-    if (view === 'creds') openCredsPanel();
-    if (view === 'hosts') openHostsPanel();
-    if (view === 'operators') openOperatorsPanel();
-    if (view === 'scripts') openScriptsPanel();
-    if (view === 'iocs') openIOCPanel();
-    if (view === 'report') exportReport();
-    if (view === 'c2profiles') openC2ProfileEditor();
-    if (view === 'infrastructure') openInfrastructurePanel();
-    if (view === 'extensions') openExtensionCenter();
-    if (view === 'team') openTeamCenter();
-    if (view === 'mcp') openMCPPanel();
+function closeToolbarMenus(focusTrigger = false) {
+  document.querySelectorAll('.toolbar-menu.open').forEach(menu => {
+    menu.classList.remove('open');
+    const trigger = menu.querySelector('.toolbar-menu-trigger');
+    trigger?.setAttribute('aria-expanded', 'false');
+    if (focusTrigger) trigger?.focus();
+  });
+}
+
+function markToolbarViewActive(view) {
+  document.querySelectorAll('.tb-btn, .toolbar-menu-item').forEach(item => item.classList.remove('active'));
+  const item = document.querySelector(`[data-view="${view}"]`);
+  item?.classList.add('active');
+  item?.closest('.toolbar-menu')?.querySelector('.toolbar-menu-trigger')?.classList.add('active');
+}
+
+function openToolbarView(view) {
+  if (!view) return;
+  closeToolbarMenus();
+  markToolbarViewActive(view);
+  if (view === 'sessions' || view === 'beacons') { hideModal(); selectAgentList(view); refreshAgents(); return; }
+  if (view === 'listeners') openListenersPanel();
+  if (view === 'tasks') openTaskCenter();
+  if (view === 'generate') openGeneratePanel();
+  if (view === 'builds') openBuildsPanel();
+  if (view === 'profiles') openProfilesPanel();
+  if (view === 'events') openEventsPanel();
+  if (view === 'loot') openLootPanel();
+  if (view === 'creds') openCredsPanel();
+  if (view === 'hosts') openHostsPanel();
+  if (view === 'operators') openOperatorsPanel();
+  if (view === 'scripts') openScriptsPanel();
+  if (view === 'iocs') openIOCPanel();
+  if (view === 'report') exportReport();
+  if (view === 'c2profiles') openC2ProfileEditor();
+  if (view === 'infrastructure') openInfrastructurePanel();
+  if (view === 'extensions') openExtensionCenter();
+  if (view === 'team') openTeamCenter();
+  if (view === 'mcp') openMCPPanel();
+}
+
+document.querySelectorAll('.tb-btn[data-view], .toolbar-menu-item[data-view]').forEach(btn => {
+  btn.addEventListener('click', () => openToolbarView(btn.dataset.view));
+});
+document.querySelectorAll('.toolbar-menu-trigger').forEach(trigger => {
+  trigger.addEventListener('click', e => {
+    e.stopPropagation();
+    const menu = trigger.closest('.toolbar-menu');
+    const willOpen = !menu.classList.contains('open');
+    closeToolbarMenus();
+    if (willOpen) {
+      menu.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      menu.querySelector('.toolbar-menu-item')?.focus();
+    }
   });
 });
+document.addEventListener('click', e => { if (!e.target.closest('.toolbar-menu')) closeToolbarMenus(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && document.querySelector('.toolbar-menu.open')) { e.preventDefault(); closeToolbarMenus(true); } });
 
 // ── View panels (open in bottom interaction area) ──────────────────────────
 // Config views (Generate, Listeners, Builds, Profiles, Events, Loot, Operators)
@@ -4184,13 +4217,18 @@ function openPalette() {
 function closePalette() { document.getElementById('palette-overlay').classList.add('hidden'); }
 function buildPalette(q) {
   q = q.toLowerCase();
-  const panels = ['sessions','beacons','tasks','listeners','generate','builds','profiles','events','loot','creds','hosts','operators','scripts','iocs','c2profiles','infrastructure','extensions','team','mcp'];
+  const panels = [
+    ['sessions','会话'],['beacons','信标'],['tasks','任务中心'],['listeners','监听器'],['generate','生成植入体'],
+    ['builds','构建记录'],['profiles','植入体配置'],['c2profiles','C2 配置'],['events','事件日志'],['loot','战利品'],
+    ['creds','凭据'],['hosts','主机'],['iocs','IOC'],['report','报告'],['scripts','脚本'],['infrastructure','基础设施'],
+    ['extensions','扩展中心'],['mcp','MCP'],['operators','操作员'],['team','团队与审计']
+  ];
   const items = [];
   [...allSessions.map(s => ({ kind:'session', obj:s })), ...allBeacons.map(b => ({ kind:'beacon', obj:b }))].forEach(a => {
     const label = `${a.kind==='session'?'💻':'📡'} ${a.obj.hostname||a.obj.id.slice(0,8)} — ${a.obj.username||''}`;
     if (!q || label.toLowerCase().includes(q)) items.push({ label, action: () => { switchView('sessions'); openInteract(a.kind, a.obj); } });
   });
-  panels.forEach(p => { if (!q || p.includes(q)) items.push({ label: `⚙ ${p}`, action: () => { const b = document.querySelector(`.tb-btn[data-view="${p}"]`); if (b) b.click(); } }); });
+  panels.forEach(([view, label]) => { if (!q || view.includes(q) || label.toLowerCase().includes(q)) items.push({ label: `⚙ ${label}`, action: () => openToolbarView(view) }); });
   paletteItems = items; paletteSel = 0; renderPalette();
 }
 function renderPalette() {
@@ -4207,7 +4245,7 @@ document.getElementById('palette-input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && paletteItems[paletteSel]) { paletteItems[paletteSel].action(); closePalette(); }
 });
 document.getElementById('palette-overlay').addEventListener('click', e => { if (e.target.id === 'palette-overlay') closePalette(); });
-function switchView(v) { const b = document.querySelector(`.tb-btn[data-view="${v}"]`); if (b) b.click(); }
+function switchView(v) { openToolbarView(v); }
 
 // ── Resize handle ──────────────────────────────────────────────────────────
 (function() {

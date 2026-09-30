@@ -32,23 +32,43 @@
       <button class="tb-btn" data-view="sessions">会话</button>
       <button class="tb-btn" data-view="beacons">信标</button>
       <button class="tb-btn" data-view="tasks">任务中心</button>
-      <button class="tb-btn" data-view="listeners">监听器</button>
-      <button class="tb-btn" data-view="generate">生成植入体</button>
-      <button class="tb-btn" data-view="builds">构建记录</button>
-      <button class="tb-btn" data-view="profiles">植入体配置</button>
-      <button class="tb-btn" data-view="events">事件日志</button>
-      <button class="tb-btn" data-view="loot">战利品</button>
-      <button class="tb-btn" data-view="creds">凭据</button>
-      <button class="tb-btn" data-view="hosts">主机</button>
-      <button class="tb-btn" data-view="operators">操作员</button>
-      <button class="tb-btn" data-view="scripts">脚本</button>
-      <button class="tb-btn" data-view="iocs">IOC</button>
-      <button class="tb-btn" data-view="report">报告</button>
-      <button class="tb-btn" data-view="c2profiles">C2 配置</button>
-      <button class="tb-btn" data-view="infrastructure">基础设施</button>
-      <button class="tb-btn" data-view="extensions">扩展中心</button>
-      <button class="tb-btn" data-view="team">团队与审计</button>
-      <button class="tb-btn" data-view="mcp">MCP</button>
+      <div class="toolbar-menu" data-toolbar-group="payloads">
+        <button class="tb-btn toolbar-menu-trigger" type="button" aria-haspopup="true" aria-expanded="false">载荷与监听<span class="menu-chevron" aria-hidden="true"></span></button>
+        <div class="toolbar-menu-panel" role="menu">
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="listeners">监听器</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="generate">生成植入体</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="builds">构建记录</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="profiles">植入体配置</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="c2profiles">C2 配置</button>
+        </div>
+      </div>
+      <div class="toolbar-menu" data-toolbar-group="targets">
+        <button class="tb-btn toolbar-menu-trigger" type="button" aria-haspopup="true" aria-expanded="false">目标数据<span class="menu-chevron" aria-hidden="true"></span></button>
+        <div class="toolbar-menu-panel" role="menu">
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="events">事件日志</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="loot">战利品</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="creds">凭据</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="hosts">主机</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="iocs">IOC</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="report">报告</button>
+        </div>
+      </div>
+      <div class="toolbar-menu" data-toolbar-group="tools">
+        <button class="tb-btn toolbar-menu-trigger" type="button" aria-haspopup="true" aria-expanded="false">工具<span class="menu-chevron" aria-hidden="true"></span></button>
+        <div class="toolbar-menu-panel" role="menu">
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="scripts">脚本</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="infrastructure">基础设施</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="extensions">扩展中心</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="mcp">MCP</button>
+        </div>
+      </div>
+      <div class="toolbar-menu" data-toolbar-group="team">
+        <button class="tb-btn toolbar-menu-trigger" type="button" aria-haspopup="true" aria-expanded="false">团队<span class="menu-chevron" aria-hidden="true"></span></button>
+        <div class="toolbar-menu-panel toolbar-menu-panel-right" role="menu">
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="operators">操作员</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="team">团队与审计</button>
+        </div>
+      </div>
     </div>
     <div class="toolbar-right">
       <span id="server-version" class="version-tag"></span>
