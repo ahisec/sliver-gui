@@ -154,12 +154,12 @@ C2 配置
 
 任务：
 
-- [ ] 建立官网功能矩阵，并在每次 Sliver 依赖升级时复核。
-- [ ] 记录当前所有 Wails 绑定方法及其对应 RPC。
+- [x] 建立官网功能矩阵，并在每次 Sliver 依赖升级时复核。
+- [x] 记录当前所有 Wails 绑定方法及其对应 RPC/客户端能力分类。
 - [x] 建立统一的前端错误对象和中文错误映射。
-- [ ] 增加连接、断开、取消文件选择器和基础 RPC 的冒烟测试清单。
-- [ ] 明确受支持的 Windows、Linux、macOS 和 Teamserver 版本范围。
-- [ ] 为新增界面建立中文化、加载态、空态、错误态和窄窗口检查项。
+- [x] 增加连接、断开、取消文件选择器和基础 RPC 的冒烟测试清单。
+- [x] 明确受支持的 Windows、Linux、macOS 和 Teamserver 版本范围。
+- [x] 为新增界面建立中文化、加载态、空态、错误态和窄窗口检查项。
 
 完成标准：
 
@@ -282,6 +282,8 @@ C2 配置
 - `待评估`：需要核对当前 Sliver protobuf/RPC 和版本兼容性。
 - `文档`：主要属于部署、原理或外部工具，不应伪装成客户端功能。
 
+复核基线：Sliver 客户端依赖 `e53f66de72b9`（见 `go.mod`），官网主题于 2026-09-30 盘点。依赖升级时必须重新生成 `docs/WAILS_BINDINGS.md`，并复核本矩阵中所有“待评估”和“部分”条目。
+
 | 官网主题 | 当前判断 | 计划归属 | 说明 |
 |---|---|---|---|
 | Aliases and Extensions | 部分 | M5 | 已有扩展执行，需统一发现、参数和版本管理 |
@@ -350,7 +352,7 @@ go vet ./...
 node --check frontend/dist/main.js
 ```
 
-随着前端模块拆分，应将所有 JavaScript 文件纳入统一检查命令。
+统一入口为 `powershell -ExecutionPolicy Bypass -File scripts/verify.ps1`，会检查所有前端 JavaScript、运行前后端测试并重新生成 Wails 绑定清单。人工冒烟和支持范围见 `docs/TESTING_AND_SUPPORT.zh-CN.md`。
 
 ## 9. 近期开发队列
 
