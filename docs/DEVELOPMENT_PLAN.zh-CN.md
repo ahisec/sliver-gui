@@ -172,7 +172,7 @@ C2 配置
 
 任务：
 
-- [ ] 新增 `ServerCapabilities` 后端接口和兼容性页面。
+- [x] 新增 `ServerCapabilities` 后端接口和兼容性页面。
 - [ ] 显示 Teamserver、GUI、Wails 和 protobuf/Sliver 依赖版本。
 - [ ] 将 Beacon Task、Implant Generate、Armory 安装等统一为任务模型。
 - [ ] 支持任务状态：排队、运行、等待回连、成功、失败、取消。
@@ -356,7 +356,7 @@ node --check frontend/dist/main.js
 
 按“小步、可验证、低回归风险”的顺序，优先处理：
 
-1. 建立 `ServerCapabilities` 数据结构和只读兼容性弹窗。
+1. [已完成] 建立 `ServerCapabilities` 数据结构和只读兼容性弹窗。
 2. 统一前端 RPC 错误格式及中文错误展示。
 3. 建立最小任务中心，先接入 Beacon Task 和 Implant Generate。
 4. 将 Session/Beacon 详情逐步整理为标签式工作区。
@@ -371,4 +371,3 @@ node --check frontend/dist/main.js
 - 新需求先归入阶段和官网功能矩阵，再进入实现。
 - 若某项能力没有稳定 RPC，记录为“客户端辅助”或“文档”，不得通过脆弱的服务端文件修改模拟支持。
 - 每个里程碑完成后保留一份简短变更记录和已知限制。
-

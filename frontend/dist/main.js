@@ -1917,6 +1917,48 @@ function openViewPanel(id, title, content) {
 function hideModal() { document.getElementById('modal-overlay').classList.add('hidden'); }
 document.getElementById('modal-close').addEventListener('click', hideModal);
 
+function compatibilityStatus(status) {
+  if (status === 'available') return { label: '可用', cls: 'ok' };
+  if (status === 'empty') return { label: '未配置', cls: 'empty' };
+  return { label: '不可用', cls: 'err' };
+}
+
+async function openCompatibilityPanel() {
+  openViewPanel('_compatibility', '服务器兼容性', '<div class="compat-loading"><span class="spinner"></span>正在读取团队服务器能力...</div>');
+  const snapshot = await App().GetServerCompatibility().catch(error => ({ error: String(error) }));
+  const body = document.getElementById('modal-body');
+  if (!body || document.getElementById('modal-overlay').classList.contains('hidden')) return;
+  if (snapshot.error) {
+    body.innerHTML = `<div class="compat-error"><strong>无法读取兼容性信息</strong><span>${esc(snapshot.error)}</span></div>`;
+    return;
+  }
+
+  const gui = snapshot.gui || {};
+  const generatedAt = snapshot.generatedAt ? new Date(snapshot.generatedAt).toLocaleString() : '-';
+  const items = (snapshot.items || []).map(item => {
+    const status = compatibilityStatus(item.status);
+    const details = (item.details || []).filter(Boolean);
+    return `<section class="compat-item">
+      <div class="compat-item-head">
+        <div><h3>${esc(item.label)}</h3><p>${esc(item.summary || '')}</p></div>
+        <span class="compat-badge ${status.cls}">${status.label}</span>
+      </div>
+      ${details.length ? `<div class="compat-tags">${details.map(detail => `<span>${esc(detail)}</span>`).join('')}</div>` : ''}
+      ${item.error ? `<details class="compat-detail"><summary>查看原始错误</summary><code>${esc(item.error)}</code></details>` : ''}
+    </section>`;
+  }).join('');
+
+  body.innerHTML = `<div class="compat-overview">
+      <div><span>团队服务器</span><strong>${esc(snapshot.teamserver || '-')}</strong></div>
+      <div><span>操作员</span><strong>${esc(snapshot.operator || '-')}</strong></div>
+      <div><span>GUI 版本</span><strong>${esc(gui.version || 'dev')} · ${esc(gui.gitCommit || 'unknown')}</strong></div>
+      <div><span>检测时间</span><strong>${esc(generatedAt)}</strong></div>
+    </div>
+    <div class="compat-note">此页面仅调用只读 RPC，不会修改远程团队服务器配置。</div>
+    <div class="compat-list">${items || '<div class="compat-error">没有返回能力信息。</div>'}</div>`;
+}
+document.getElementById('compatibility-btn').addEventListener('click', openCompatibilityPanel);
+
 // ── Script Manager Panel (Cobalt Strike-style lateral movement / privesc / persistence) ──
 // ── Script Manager Panel (Cobalt Strike-style lateral movement / privesc / persistence) ──
 async function openScriptsPanel() {
