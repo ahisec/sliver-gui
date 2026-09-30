@@ -3,6 +3,7 @@ let selectedConfigPath = null, pollTimer = null, activeCtxAgent = null;
 let lastConfigPath = null, reconnectTimer = null, reconnecting = false;
 let teamserverLabel = 'teamserver';
 let allSessions = [], allBeacons = [];
+let agentListFilter = 'sessions';
 let pivotTree = [];                  // pivot topology from GetPivotGraph RPC
 // Graph interaction state (persists across refreshes).
 const graphPos = {};                 // agent id -> {x,y} in graph coords
@@ -365,11 +366,25 @@ async function refreshAgents() {
   allSessions = await App().ListSessions().catch(() => []) || [];
   allBeacons = await App().ListBeacons().catch(() => []) || [];
   pivotTree = await App().GetPivotGraph().catch(() => []) || [];
-  document.getElementById('agent-count').textContent = `${allSessions.length} 个会话 | ${allBeacons.length} 个信标`;
+  updateAgentCount();
   renderTable();
   refreshOpenAgentHeaders();
   if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
   refreshListenerHealth();
+}
+function visibleAgents() {
+  if (agentListFilter === 'beacons') return allBeacons.map(obj => ({ kind:'beacon', obj }));
+  return allSessions.map(obj => ({ kind:'session', obj }));
+}
+function updateAgentCount() {
+  const count = agentListFilter === 'beacons' ? allBeacons.length : allSessions.length;
+  document.getElementById('agent-count').textContent = `${count} 个${agentListFilter === 'beacons' ? '信标' : '会话'}`;
+}
+function selectAgentList(view) {
+  agentListFilter = view === 'beacons' ? 'beacons' : 'sessions';
+  updateAgentCount();
+  renderTable();
+  if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
 }
 
 async function refreshListenerHealth() {
@@ -420,8 +435,11 @@ function renderTable() {
     tr.addEventListener('contextmenu', e => showCtx(e, kind, o));
     body.appendChild(tr);
   };
-  allSessions.forEach(s => row(s, 'session'));
-  allBeacons.forEach(b => row(b, 'beacon'));
+  const agents = visibleAgents();
+  agents.forEach(agent => row(agent.obj, agent.kind));
+  if (!agents.length) {
+    body.innerHTML = `<tr><td colspan="10" class="empty-state">暂无${agentListFilter === 'beacons' ? '信标' : '会话'}</td></tr>`;
+  }
 }
 
 // ── View toggle ────────────────────────────────────────────────────────────
@@ -493,10 +511,7 @@ function renderGraph() {
   const svg = document.getElementById('graph-svg');
   if (!svg) return;
   try {
-    const nodes = [
-      ...allSessions.map(s => ({ kind:'session', obj:s })),
-      ...allBeacons.map(b  => ({ kind:'beacon',  obj:b })),
-    ];
+    const nodes = visibleAgents();
     const W = svg.clientWidth || 900, H = svg.clientHeight || 460;
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     const fwX = 74, fwY = H / 2;
@@ -642,6 +657,9 @@ function renderGraph() {
       '</defs>';
 
     html += `<g id="g-root" transform="translate(${graphView.tx},${graphView.ty}) scale(${graphView.scale})">`;
+    if (!nodes.length) {
+      html += `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="var(--muted)" font-size="13">暂无${agentListFilter === 'beacons' ? '信标' : '会话'}</text>`;
+    }
 
     // Draw edges
     graphEdges.forEach(ed => {
@@ -2173,7 +2191,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
     const view = btn.dataset.view;
     document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    if (view === 'sessions' || view === 'beacons') { hideModal(); refreshAgents(); return; }
+    if (view === 'sessions' || view === 'beacons') { hideModal(); selectAgentList(view); refreshAgents(); return; }
     if (view === 'listeners') openListenersPanel();
     if (view === 'tasks') openTaskCenter();
     if (view === 'generate') openGeneratePanel();
@@ -2200,7 +2218,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
 function openViewPanel(id, title, content) {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = content;
-  document.querySelector('#modal-overlay .modal')?.classList.toggle('wide', ['_infrastructure','_extensions','_team'].includes(id));
+  document.querySelector('#modal-overlay .modal')?.classList.toggle('wide', ['_infrastructure','_extensions','_team','_profiles'].includes(id));
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 function hideModal() { document.getElementById('modal-overlay').classList.add('hidden'); }
@@ -3584,26 +3602,52 @@ function profilesContent() {
   return `<div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:10px">
       <button class="btn small" onclick="pinProfiles()">📌 固定到控制台</button>
     </div>
-    <div class="panel" style="margin-bottom:12px">
+    <div class="panel profile-editor" style="margin-bottom:12px">
       <h3>新建配置档案</h3>
       <form id="prof-form">
-        <div class="gen-row">
-          <div class="gen-field"><label>名称</label><input name="name" placeholder="win-mtls" required/></div>
-          <div class="gen-field"><label>格式</label><select name="format"><option value="exe">可执行文件</option><option value="shared">共享库</option><option value="service">服务</option><option value="shellcode">Shellcode</option></select></div>
-        </div>
-        <div class="gen-row">
-          <div class="gen-field"><label>操作系统</label><select name="goos"><option value="windows">Windows</option><option value="linux">Linux</option><option value="darwin">macOS</option></select></div>
-          <div class="gen-field"><label>架构</label><select name="goarch"><option value="amd64">amd64</option><option value="386">386</option><option value="arm64">arm64</option></select></div>
-        </div>
-        <div class="gen-row"><div class="gen-field" style="flex:2"><label>C2 URL</label><input name="c2Url" placeholder="mtls://ip:port" required/></div></div>
-        <div class="gen-row">
-          <label class="check-label"><input type="checkbox" name="debug"/> 调试模式</label>
-          <label class="check-label"><input type="checkbox" name="beacon" id="prof-beacon"/> 信标模式</label>
-        </div>
-        <div class="gen-row" id="prof-beacon-opts" style="display:none">
-          <div class="gen-field"><label>间隔（秒）</label><input name="interval" type="number" value="60"/></div>
-          <div class="gen-field"><label>抖动（秒）</label><input name="jitter" type="number" value="30"/></div>
-        </div>
+        <fieldset class="profile-section"><legend>基础与输出</legend>
+          <div class="profile-grid">
+            <div class="gen-field"><label>档案名称</label><input name="name" placeholder="win-mtls" required/></div>
+            <div class="gen-field"><label>格式</label><select name="format"><option value="exe">可执行文件</option><option value="shared">共享库</option><option value="service">服务</option><option value="shellcode">Shellcode</option></select></div>
+            <div class="gen-field"><label>操作系统</label><select name="goos"><option value="windows">Windows</option><option value="linux">Linux</option><option value="darwin">macOS</option></select></div>
+            <div class="gen-field"><label>架构</label><select name="goarch"><option value="amd64">amd64</option><option value="386">386</option><option value="arm64">arm64</option></select></div>
+            <div class="gen-field"><label>模板名称</label><input name="templateName" placeholder="sliver"/></div>
+          </div>
+          <div class="profile-checks">
+            <label class="check-label"><input type="checkbox" name="debug"/> 调试模式</label>
+            <label class="check-label"><input type="checkbox" name="evasion"/> 启用规避功能</label>
+            <label class="check-label"><input type="checkbox" name="obfuscateSymbols" checked/> 混淆符号</label>
+            <label class="check-label"><input type="checkbox" name="netGo"/> 强制 NetGo</label>
+            <label class="check-label"><input type="checkbox" name="runAtLoad" id="prof-run-at-load"/> 共享库加载时运行</label>
+            <label class="check-label"><input type="checkbox" name="beacon" id="prof-beacon"/> 信标模式</label>
+          </div>
+          <div class="profile-grid hidden" id="prof-beacon-opts">
+            <div class="gen-field"><label>信标间隔（秒）</label><input name="interval" type="number" min="1" value="60"/></div>
+            <div class="gen-field"><label>信标抖动（秒）</label><input name="jitter" type="number" min="0" value="30"/></div>
+          </div>
+        </fieldset>
+        <fieldset class="profile-section"><legend>C2 与连接</legend>
+          <div class="gen-field"><label>多个 C2（每行：优先级 | URL | 可选协议参数）</label><textarea name="c2Entries" rows="4" placeholder="1 | mtls://10.0.0.5:8888&#10;2 | https://example.com:443" required></textarea></div>
+          <div class="profile-grid">
+            <div class="gen-field"><label>连接策略</label><select name="connectionStrategy"><option value="">默认</option><option value="s">顺序</option><option value="r">随机</option><option value="rd">随机域名</option></select></div>
+            <div class="gen-field"><label>重连间隔（秒）</label><input name="reconnectInterval" type="number" min="0" value="60"/></div>
+            <div class="gen-field"><label>最大连接错误</label><input name="maxConnectionErrors" type="number" min="0" value="1000"/></div>
+            <div class="gen-field"><label>长轮询超时（秒）</label><input name="pollTimeout" type="number" min="0" value="360"/></div>
+            <div class="gen-field"><label>HTTP C2 档案</label><input name="httpC2Profile" placeholder="default"/></div>
+            <div class="gen-field"><label>流量编码器（逗号分隔）</label><input name="trafficEncoders" placeholder="gzip"/></div>
+          </div>
+          <div class="gen-field"><label>Canary 域名（逗号或换行分隔）</label><textarea name="canaryDomains" rows="2" placeholder="canary.example.com"></textarea></div>
+        </fieldset>
+        <fieldset class="profile-section"><legend>执行限制</legend>
+          <div class="profile-checks"><label class="check-label"><input type="checkbox" name="limitDomainJoined"/> 仅域成员计算机</label></div>
+          <div class="profile-grid">
+            <div class="gen-field"><label>最晚执行时间</label><input name="limitDatetime" placeholder="2027-01-01T00:00:00Z"/></div>
+            <div class="gen-field"><label>主机名</label><input name="limitHostname"/></div>
+            <div class="gen-field"><label>用户名</label><input name="limitUsername"/></div>
+            <div class="gen-field"><label>必须存在的文件</label><input name="limitFileExists"/></div>
+            <div class="gen-field"><label>区域设置</label><input name="limitLocale" placeholder="en-US"/></div>
+          </div>
+        </fieldset>
         <div class="gen-row"><button type="submit" class="btn accent" style="margin-left:auto">保存配置档案</button></div>
         <div id="prof-msg" class="status-msg"></div>
       </form>
@@ -3615,19 +3659,32 @@ function openProfilesPanel() {
   wireProfileForm();
   refreshProfilesList();
 }
+function parseProfileC2(value) {
+  return String(value || '').split(/\r?\n/).map((line, index) => {
+    const parts = line.split('|').map(part => part.trim());
+    if (!parts.join('')) return null;
+    const hasPriority = /^\d+$/.test(parts[0]);
+    return { priority: hasPriority ? parseInt(parts.shift(), 10) : index + 1, url: parts.shift() || '', options: parts.join('|').trim() };
+  }).filter(item => item?.url);
+}
 function wireProfileForm() {
   const f = document.getElementById('prof-form'); if (!f) return;
   document.getElementById('prof-beacon')?.addEventListener('change', function() {
-    document.getElementById('prof-beacon-opts').style.display = this.checked ? 'flex' : 'none';
+    document.getElementById('prof-beacon-opts').classList.toggle('hidden', !this.checked);
   });
+  f.format.addEventListener('change', () => { f.runAtLoad.disabled = f.format.value !== 'shared'; if (f.runAtLoad.disabled) f.runAtLoad.checked = false; });
+  f.debug.addEventListener('change', () => { if (f.debug.checked) f.obfuscateSymbols.checked = false; });
   f.addEventListener('submit', async e => {
     e.preventDefault();
-    const req = { name:f.name.value, goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2Url:f.c2Url.value, debug:f.debug.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0 };
+    const c2 = parseProfileC2(f.c2Entries.value);
+    const splitList = value => String(value || '').split(/[\r\n,]+/).map(v => v.trim()).filter(Boolean);
+    const req = { name:f.name.value.trim(), goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2, c2Url:c2[0]?.url||'', debug:f.debug.checked, evasion:f.evasion.checked, obfuscateSymbols:f.obfuscateSymbols.checked, netGo:f.netGo.checked, runAtLoad:f.runAtLoad.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0, connectionStrategy:f.connectionStrategy.value, reconnectInterval:parseInt(f.reconnectInterval.value)||0, maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0, pollTimeout:parseInt(f.pollTimeout.value)||0, httpC2Profile:f.httpC2Profile.value.trim(), trafficEncoders:splitList(f.trafficEncoders.value), templateName:f.templateName.value.trim(), canaryDomains:splitList(f.canaryDomains.value), limitDomainJoined:f.limitDomainJoined.checked, limitDatetime:f.limitDatetime.value.trim(), limitHostname:f.limitHostname.value.trim(), limitUsername:f.limitUsername.value.trim(), limitFileExists:f.limitFileExists.value.trim(), limitLocale:f.limitLocale.value.trim() };
     const msg = document.getElementById('prof-msg');
+    if (!c2.length) { msg.textContent = '请至少填写一条有效的 C2 URL'; msg.className = 'status-msg err'; return; }
     msg.textContent = '正在保存...'; msg.className = 'status-msg';
     const r = await App().SaveImplantProfile(req).then(() => null).catch(e => e);
     if (r) { msg.textContent = rpcErrorMessage(r, '保存配置档案失败'); msg.className = 'status-msg err'; }
-    else { msg.textContent = '配置档案已保存'; msg.className = 'status-msg ok'; f.reset(); refreshProfilesList(); }
+    else { msg.textContent = '配置档案已保存'; msg.className = 'status-msg ok'; f.reset(); f.obfuscateSymbols.checked = true; document.getElementById('prof-beacon-opts').classList.add('hidden'); refreshProfilesList(); }
   });
 }
 async function refreshProfilesList() {
@@ -3636,7 +3693,7 @@ async function refreshProfilesList() {
   const profs = await App().ListImplantProfiles().catch(() => []);
   const html = !profs?.length
     ? '<div style="padding:10px;color:var(--muted)">暂无已保存的配置档案，请在上方创建。</div>'
-    : profs.map(p => `<div style="padding:5px 10px;font-size:12.5px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1">${esc(p.name)}</span><span style="color:var(--muted)">${esc(p.goos)}/${esc(p.goarch)}</span><span style="color:var(--muted)">${esc(p.format)}</span><span style="color:var(--muted);font-family:var(--mono)">${esc(p.c2Url||'')}</span><button class="btn small" onclick='genFromProfile(${JSON.stringify(p)})'>生成</button><button class="btn small danger" onclick="deleteImplantProfile('${esc(p.name)}')">删除</button></div>`).join('');
+    : profs.map(p => `<div class="profile-list-row"><span><strong>${esc(p.name)}</strong><small>${p.beacon?'信标':'会话'} · ${esc(p.goos)}/${esc(p.goarch)} · ${esc(p.format)} · ${(p.c2||[]).length||1} 条 C2</small></span><span class="profile-tags">${p.evasion?'<em>规避</em>':''}${p.obfuscateSymbols?'<em>符号混淆</em>':''}${p.limitDomainJoined||p.limitHostname||p.limitUsername?'<em>执行限制</em>':''}</span><button class="btn small" onclick='genFromProfile(${JSON.stringify(p)})'>生成</button><button class="btn small danger" onclick="deleteImplantProfile('${esc(p.name)}')">删除</button></div>`).join('');
   targets.forEach(el => el.innerHTML = html);
 }
 function deleteImplantProfile(name) {
@@ -3665,6 +3722,7 @@ function genFromProfile(p) {
   openGeneratePanel();
   setTimeout(() => {
     const f = document.getElementById('gen-form'); if (!f) return;
+    f._profileConfig = p;
     if (p.goos) f.goos.value = p.goos;
     if (p.goarch) f.goarch.value = p.goarch;
     if (p.format) f.format.value = p.format;
@@ -3766,7 +3824,14 @@ function openGeneratePanel() {
     });
     document.getElementById('gen-builds').addEventListener('click', openBuildsPanel);
     const f = document.getElementById('gen-form'), submit = document.getElementById('gen-submit');
-    const readReq = () => ({name:f.name.value,goos:f.goos.value,goarch:f.goarch.value,format:f.format.value,c2Url:f.c2Url.value,debug:f.debug.checked,beacon:f.beacon.checked,interval:parseInt(f.interval?.value)||60,jitter:parseInt(f.jitter?.value)||0,httpC2Profile:f.httpC2Profile.value,connectionStrategy:f.connectionStrategy.value,reconnectInterval:parseInt(f.reconnectInterval.value)||0,maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0,pollTimeout:0,trafficEncoders:f.trafficEncoder.value?[f.trafficEncoder.value]:[],metadataPath:f.metadataPath.value});
+    f._profileConfig = {};
+    const readReq = () => {
+      const profileC2 = f._profileConfig.c2 || [];
+      const c2 = profileC2.length
+        ? profileC2.map((entry, index) => index === 0 ? {...entry, url:f.c2Url.value} : entry)
+        : [];
+      return {...f._profileConfig,name:f.name.value,goos:f.goos.value,goarch:f.goarch.value,format:f.format.value,c2,c2Url:f.c2Url.value,debug:f.debug.checked,beacon:f.beacon.checked,interval:parseInt(f.interval?.value)||60,jitter:parseInt(f.jitter?.value)||0,httpC2Profile:f.httpC2Profile.value,connectionStrategy:f.connectionStrategy.value,reconnectInterval:parseInt(f.reconnectInterval.value)||0,maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0,pollTimeout:f._profileConfig.pollTimeout||0,trafficEncoders:f.trafficEncoder.value?[f.trafficEncoder.value]:(f._profileConfig.trafficEncoders||[]),metadataPath:f.metadataPath.value};
+    };
     const invalidate = () => { submit.disabled=true; document.getElementById('gen-preflight-result').innerHTML='<span>配置已变化，请重新执行预检。</span>'; };
     f.addEventListener('input', invalidate); f.addEventListener('change', invalidate);
     document.getElementById('gen-pick-metadata').addEventListener('click', async()=>{ const path=await App().PickPEMetadataFile().catch(()=> ''); if(path){f.metadataPath.value=path;invalidate();} });
@@ -3775,7 +3840,7 @@ function openGeneratePanel() {
     const profileSel=document.getElementById('gen-profile'); profileSel.innerHTML='<option value="">自定义配置</option>'+profiles.map((p,i)=>`<option value="${i}">${esc(p.name)}</option>`).join('');
     f.httpC2Profile.innerHTML='<option value="">自动选择</option>'+httpProfiles.map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
     f.trafficEncoder.innerHTML='<option value="">不使用</option>'+encoders.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
-    profileSel.addEventListener('change',()=>{const p=profiles[parseInt(profileSel.value)];if(!p)return;Object.entries({goos:p.goos,goarch:p.goarch,format:p.format?.toLowerCase().replace('executable','exe').replace('shared_lib','shared'),c2Url:p.c2Url,httpC2Profile:p.httpC2Profile,connectionStrategy:p.connectionStrategy,reconnectInterval:p.reconnectInterval,maxConnectionErrors:p.maxConnectionErrors}).forEach(([k,v])=>{if(v!==undefined&&v!==null&&f[k])f[k].value=v;});f.debug.checked=!!p.debug;f.beacon.checked=!!p.beacon;document.getElementById('gbeacon-opts').style.display=p.beacon?'flex':'none';if(p.interval)f.interval.value=p.interval;if(p.jitter>=0)f.jitter.value=p.jitter;invalidate();});
+    profileSel.addEventListener('change',()=>{const p=profiles[parseInt(profileSel.value)];f._profileConfig=p||{};if(!p)return;Object.entries({goos:p.goos,goarch:p.goarch,format:p.format,c2Url:p.c2Url,httpC2Profile:p.httpC2Profile,connectionStrategy:p.connectionStrategy,reconnectInterval:p.reconnectInterval,maxConnectionErrors:p.maxConnectionErrors}).forEach(([k,v])=>{if(v!==undefined&&v!==null&&f[k])f[k].value=v;});f.debug.checked=!!p.debug;f.beacon.checked=!!p.beacon;document.getElementById('gbeacon-opts').style.display=p.beacon?'flex':'none';if(p.interval)f.interval.value=p.interval;if(p.jitter>=0)f.jitter.value=p.jitter;if(p.trafficEncoders?.length)f.trafficEncoder.value=p.trafficEncoders[0];invalidate();});
     document.getElementById('gen-preflight').addEventListener('click',async()=>{const box=document.getElementById('gen-preflight-result');box.innerHTML='<span>正在检查依赖...</span>';const r=await App().PreflightImplant(readReq()).catch(error=>({error}));if(r.error){box.innerHTML=rpcErrorHtml(r.error,'预检失败');submit.disabled=true;return;}const issues=[...(r.errors||[]).map(v=>`<li class="err">${esc(v)}</li>`),...(r.warnings||[]).map(v=>`<li class="warn">${esc(v)}</li>`)];box.innerHTML=`<strong>${r.valid?'预检通过':'预检未通过'}</strong><ul>${(r.effectiveSummary||[]).map(v=>`<li>${esc(v)}</li>`).join('')}${issues.join('')}</ul>${r.availableBuilders?.length?`<span>可用外部 Builder：${esc(r.availableBuilders.join(', '))}</span>`:''}`;submit.disabled=!r.valid;});
     // Populate "From Listener" dropdown; auto-fill C2 URL from the first one.
     const sel = document.getElementById('gen-listener');
@@ -3858,7 +3923,7 @@ document.getElementById('palette-input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && paletteItems[paletteSel]) { paletteItems[paletteSel].action(); closePalette(); }
 });
 document.getElementById('palette-overlay').addEventListener('click', e => { if (e.target.id === 'palette-overlay') closePalette(); });
-function switchView(v) { const b = document.querySelector(`.tb-btn[data-view="${v}"]`); if (b && v !== 'sessions') b.click(); }
+function switchView(v) { const b = document.querySelector(`.tb-btn[data-view="${v}"]`); if (b) b.click(); }
 
 // ── Resize handle ──────────────────────────────────────────────────────────
 (function() {

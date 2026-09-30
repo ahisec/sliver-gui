@@ -2201,23 +2201,43 @@ func (a *App) ListenerC2Options() ([]string, error) {
 // ─── Implant Generation ───────────────────────────────────────────────────────
 
 type GenerateRequest struct {
-	Name                string   `json:"name"`
-	GOOS                string   `json:"goos"`
-	GOARCH              string   `json:"goarch"`
-	Format              string   `json:"format"`
-	C2URL               string   `json:"c2Url"`
-	Debug               bool     `json:"debug"`
-	Beacon              bool     `json:"beacon"`
-	Interval            int64    `json:"interval"`
-	Jitter              int64    `json:"jitter"`
-	ConnectionStrategy  string   `json:"connectionStrategy"`
-	ReconnectInterval   int64    `json:"reconnectInterval"`
-	MaxConnectionErrors uint32   `json:"maxConnectionErrors"`
-	PollTimeout         int64    `json:"pollTimeout"`
-	HTTPC2Profile       string   `json:"httpC2Profile"`
-	TrafficEncoders     []string `json:"trafficEncoders"`
-	TemplateName        string   `json:"templateName"`
-	MetadataPath        string   `json:"metadataPath"`
+	Name                string           `json:"name"`
+	GOOS                string           `json:"goos"`
+	GOARCH              string           `json:"goarch"`
+	Format              string           `json:"format"`
+	C2URL               string           `json:"c2Url"`
+	C2                  []ImplantC2Input `json:"c2"`
+	Debug               bool             `json:"debug"`
+	Evasion             bool             `json:"evasion"`
+	ObfuscateSymbols    bool             `json:"obfuscateSymbols"`
+	NetGo               bool             `json:"netGo"`
+	RunAtLoad           bool             `json:"runAtLoad"`
+	Beacon              bool             `json:"beacon"`
+	Interval            int64            `json:"interval"`
+	Jitter              int64            `json:"jitter"`
+	ConnectionStrategy  string           `json:"connectionStrategy"`
+	ReconnectInterval   int64            `json:"reconnectInterval"`
+	MaxConnectionErrors uint32           `json:"maxConnectionErrors"`
+	PollTimeout         int64            `json:"pollTimeout"`
+	HTTPC2Profile       string           `json:"httpC2Profile"`
+	TrafficEncoders     []string         `json:"trafficEncoders"`
+	TemplateName        string           `json:"templateName"`
+	CanaryDomains       []string         `json:"canaryDomains"`
+	LimitDomainJoined   bool             `json:"limitDomainJoined"`
+	LimitDatetime       string           `json:"limitDatetime"`
+	LimitHostname       string           `json:"limitHostname"`
+	LimitUsername       string           `json:"limitUsername"`
+	LimitFileExists     string           `json:"limitFileExists"`
+	LimitLocale         string           `json:"limitLocale"`
+	MetadataPath        string           `json:"metadataPath"`
+}
+
+// ImplantC2Input is the editable subset of an ImplantC2 entry. C2URL remains
+// supported for older frontends and is used when C2 is empty.
+type ImplantC2Input struct {
+	URL      string `json:"url"`
+	Priority uint32 `json:"priority"`
+	Options  string `json:"options"`
 }
 
 type GenerateResult struct {
@@ -2348,6 +2368,19 @@ func formatFromString(s string) clientpb.OutputFormat {
 		return clientpb.OutputFormat_SHELLCODE
 	default:
 		return clientpb.OutputFormat_EXECUTABLE
+	}
+}
+
+func formatToString(format clientpb.OutputFormat) string {
+	switch format {
+	case clientpb.OutputFormat_SHARED_LIB:
+		return "shared"
+	case clientpb.OutputFormat_SERVICE:
+		return "service"
+	case clientpb.OutputFormat_SHELLCODE:
+		return "shellcode"
+	default:
+		return "exe"
 	}
 }
 
@@ -3011,22 +3044,34 @@ func (a *App) RemoveService(sessionID, hostname, serviceName string) error {
 // ─── Implant Profiles ───────────────────────────────────────────────────────────
 
 type ProfileView struct {
-	Name                string   `json:"name"`
-	GOOS                string   `json:"goos"`
-	GOARCH              string   `json:"goarch"`
-	Format              string   `json:"format"`
-	C2URL               string   `json:"c2Url"`
-	Debug               bool     `json:"debug"`
-	Beacon              bool     `json:"beacon"`
-	Interval            int64    `json:"interval"`
-	Jitter              int64    `json:"jitter"`
-	ConnectionStrategy  string   `json:"connectionStrategy"`
-	ReconnectInterval   int64    `json:"reconnectInterval"`
-	MaxConnectionErrors uint32   `json:"maxConnectionErrors"`
-	PollTimeout         int64    `json:"pollTimeout"`
-	HTTPC2Profile       string   `json:"httpC2Profile"`
-	TrafficEncoders     []string `json:"trafficEncoders"`
-	TemplateName        string   `json:"templateName"`
+	Name                string           `json:"name"`
+	GOOS                string           `json:"goos"`
+	GOARCH              string           `json:"goarch"`
+	Format              string           `json:"format"`
+	C2URL               string           `json:"c2Url"`
+	C2                  []ImplantC2Input `json:"c2"`
+	Debug               bool             `json:"debug"`
+	Evasion             bool             `json:"evasion"`
+	ObfuscateSymbols    bool             `json:"obfuscateSymbols"`
+	NetGo               bool             `json:"netGo"`
+	RunAtLoad           bool             `json:"runAtLoad"`
+	Beacon              bool             `json:"beacon"`
+	Interval            int64            `json:"interval"`
+	Jitter              int64            `json:"jitter"`
+	ConnectionStrategy  string           `json:"connectionStrategy"`
+	ReconnectInterval   int64            `json:"reconnectInterval"`
+	MaxConnectionErrors uint32           `json:"maxConnectionErrors"`
+	PollTimeout         int64            `json:"pollTimeout"`
+	HTTPC2Profile       string           `json:"httpC2Profile"`
+	TrafficEncoders     []string         `json:"trafficEncoders"`
+	TemplateName        string           `json:"templateName"`
+	CanaryDomains       []string         `json:"canaryDomains"`
+	LimitDomainJoined   bool             `json:"limitDomainJoined"`
+	LimitDatetime       string           `json:"limitDatetime"`
+	LimitHostname       string           `json:"limitHostname"`
+	LimitUsername       string           `json:"limitUsername"`
+	LimitFileExists     string           `json:"limitFileExists"`
+	LimitLocale         string           `json:"limitLocale"`
 }
 
 func (a *App) ListImplantProfiles() ([]ProfileView, error) {
@@ -3040,29 +3085,40 @@ func (a *App) ListImplantProfiles() ([]ProfileView, error) {
 	}
 	out := make([]ProfileView, 0, len(resp.Profiles))
 	for _, p := range resp.Profiles {
-		v := ProfileView{Name: p.Name}
-		if p.Config != nil {
-			v.GOOS = p.Config.GOOS
-			v.GOARCH = p.Config.GOARCH
-			v.Format = p.Config.Format.String()
-			v.Debug = p.Config.Debug
-			v.Beacon = p.Config.IsBeacon
-			v.Interval = p.Config.BeaconInterval / int64(time.Second)
-			v.Jitter = p.Config.BeaconJitter / int64(time.Second)
-			v.ConnectionStrategy = p.Config.ConnectionStrategy
-			v.ReconnectInterval = p.Config.ReconnectInterval / int64(time.Second)
-			v.MaxConnectionErrors = p.Config.MaxConnectionErrors
-			v.PollTimeout = p.Config.PollTimeout / int64(time.Second)
-			v.HTTPC2Profile = p.Config.HTTPC2ConfigName
-			v.TrafficEncoders = append([]string(nil), p.Config.TrafficEncoders...)
-			v.TemplateName = p.Config.TemplateName
-			if len(p.Config.C2) > 0 {
-				v.C2URL = p.Config.C2[0].URL
-			}
-		}
+		v := profileViewFromConfig(p.Name, p.Config)
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+func profileViewFromConfig(name string, cfg *clientpb.ImplantConfig) ProfileView {
+	v := ProfileView{Name: name}
+	if cfg == nil {
+		return v
+	}
+	v.GOOS, v.GOARCH, v.Format = cfg.GOOS, cfg.GOARCH, formatToString(cfg.Format)
+	v.Debug, v.Evasion = cfg.Debug, cfg.Evasion
+	v.ObfuscateSymbols, v.NetGo, v.RunAtLoad = cfg.ObfuscateSymbols, cfg.NetGoEnabled, cfg.RunAtLoad
+	v.Beacon = cfg.IsBeacon
+	v.Interval, v.Jitter = cfg.BeaconInterval/int64(time.Second), cfg.BeaconJitter/int64(time.Second)
+	v.ConnectionStrategy = cfg.ConnectionStrategy
+	v.ReconnectInterval = cfg.ReconnectInterval / int64(time.Second)
+	v.MaxConnectionErrors, v.PollTimeout = cfg.MaxConnectionErrors, cfg.PollTimeout/int64(time.Second)
+	v.HTTPC2Profile, v.TemplateName = cfg.HTTPC2ConfigName, cfg.TemplateName
+	v.TrafficEncoders = append([]string(nil), cfg.TrafficEncoders...)
+	v.CanaryDomains = append([]string(nil), cfg.CanaryDomains...)
+	v.LimitDomainJoined, v.LimitDatetime = cfg.LimitDomainJoined, cfg.LimitDatetime
+	v.LimitHostname, v.LimitUsername = cfg.LimitHostname, cfg.LimitUsername
+	v.LimitFileExists, v.LimitLocale = cfg.LimitFileExists, cfg.LimitLocale
+	for _, c2 := range cfg.C2 {
+		if c2 != nil {
+			v.C2 = append(v.C2, ImplantC2Input{URL: c2.URL, Priority: c2.Priority, Options: c2.Options})
+		}
+	}
+	if len(v.C2) > 0 {
+		v.C2URL = v.C2[0].URL
+	}
+	return v
 }
 
 // SaveImplantProfile persists a new implant profile (reuses the Generate form's
@@ -3091,13 +3147,17 @@ func (a *App) SaveImplantProfile(req GenerateRequest) error {
 // scheme, a valid HTTP C2 profile name, and beacon settings. Shared by
 // GenerateImplant and SaveImplantProfile so profiles and builds stay consistent.
 func (a *App) buildImplantConfig(req GenerateRequest) *clientpb.ImplantConfig {
+	c2Entries := implantC2Entries(req)
 	cfg := &clientpb.ImplantConfig{
 		GOOS:                   req.GOOS,
 		GOARCH:                 req.GOARCH,
 		Debug:                  req.Debug,
 		Format:                 formatFromString(req.Format),
-		C2:                     []*clientpb.ImplantC2{{URL: req.C2URL, Priority: 1}},
-		ObfuscateSymbols:       false,
+		C2:                     c2Entries,
+		Evasion:                req.Evasion,
+		ObfuscateSymbols:       req.ObfuscateSymbols && !req.Debug,
+		NetGoEnabled:           req.NetGo,
+		RunAtLoad:              req.RunAtLoad && strings.EqualFold(req.Format, "shared"),
 		ConnectionStrategy:     req.ConnectionStrategy,
 		ReconnectInterval:      req.ReconnectInterval * int64(time.Second),
 		MaxConnectionErrors:    req.MaxConnectionErrors,
@@ -3105,6 +3165,13 @@ func (a *App) buildImplantConfig(req GenerateRequest) *clientpb.ImplantConfig {
 		TrafficEncodersEnabled: len(req.TrafficEncoders) > 0,
 		TrafficEncoders:        append([]string(nil), req.TrafficEncoders...),
 		TemplateName:           req.TemplateName,
+		CanaryDomains:          normalizeCanaryDomains(req.CanaryDomains),
+		LimitDomainJoined:      req.LimitDomainJoined,
+		LimitDatetime:          strings.TrimSpace(req.LimitDatetime),
+		LimitHostname:          strings.TrimSpace(req.LimitHostname),
+		LimitUsername:          strings.TrimSpace(req.LimitUsername),
+		LimitFileExists:        strings.TrimSpace(req.LimitFileExists),
+		LimitLocale:            strings.TrimSpace(req.LimitLocale),
 		// MTLS is always compiled in as a baseline transport. The generated
 		// implant's transports/session.go imports net/url, sync and sliverpb which
 		// only the MTLS/HTTP transports use; an implant that ends up with none of
@@ -3130,32 +3197,69 @@ func (a *App) buildImplantConfig(req GenerateRequest) *clientpb.ImplantConfig {
 	} else {
 		cfg.HTTPC2ConfigName = "default"
 	}
-	switch strings.ToLower(schemeOf(req.C2URL)) {
-	case "http", "https":
-		cfg.IncludeHTTP = true
-	case "dns":
-		cfg.IncludeDNS = true
-	case "wg", "wireguard":
-		cfg.IncludeWG = true
-	case "tcp", "tcp-pivot", "tcppivot":
-		// TCP pivot implants (Sliver scheme "tcp-pivot://") ride the TCP transport.
-		// Also compile in MTLS: a pivot-ONLY implant leaves the generated
-		// transports/session.go with unused imports (net/url, sync, sliverpb) and
-		// fails to build with "exit status 1". Including the MTLS transport keeps
-		// those imports used; the C2 list still holds only the pivot URL, so
-		// nothing else is ever dialed.
-		cfg.IncludeTCP = true
-		cfg.IncludeMTLS = true
-	case "namedpipe", "named-pipe":
-		cfg.IncludeNamePipe = true
-		cfg.IncludeMTLS = true
-	default:
-		cfg.IncludeMTLS = true
+	for _, c2 := range c2Entries {
+		switch strings.ToLower(schemeOf(c2.URL)) {
+		case "http", "https":
+			cfg.IncludeHTTP = true
+		case "dns":
+			cfg.IncludeDNS = true
+		case "wg", "wireguard":
+			cfg.IncludeWG = true
+		case "tcp", "tcp-pivot", "tcppivot":
+			cfg.IncludeTCP = true
+			cfg.IncludeMTLS = true
+		case "namedpipe", "named-pipe":
+			cfg.IncludeNamePipe = true
+			cfg.IncludeMTLS = true
+		default:
+			cfg.IncludeMTLS = true
+		}
 	}
 	if req.GOOS != "windows" && cfg.Format == clientpb.OutputFormat_SERVICE {
 		cfg.Format = clientpb.OutputFormat_EXECUTABLE
 	}
 	return cfg
+}
+
+func implantC2Entries(req GenerateRequest) []*clientpb.ImplantC2 {
+	inputs := req.C2
+	if len(inputs) == 0 && strings.TrimSpace(req.C2URL) != "" {
+		inputs = []ImplantC2Input{{URL: req.C2URL, Priority: 1}}
+	}
+	out := make([]*clientpb.ImplantC2, 0, len(inputs))
+	for i, input := range inputs {
+		url := strings.TrimSpace(input.URL)
+		if url == "" {
+			continue
+		}
+		priority := input.Priority
+		if priority == 0 {
+			priority = uint32(i + 1)
+		}
+		out = append(out, &clientpb.ImplantC2{URL: url, Priority: priority, Options: strings.TrimSpace(input.Options)})
+	}
+	return out
+}
+
+func normalizeCanaryDomains(domains []string) []string {
+	out := make([]string, 0, len(domains))
+	seen := map[string]bool{}
+	for _, raw := range domains {
+		for _, item := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' }) {
+			domain := strings.TrimSpace(item)
+			if domain == "" {
+				continue
+			}
+			if !strings.HasSuffix(domain, ".") {
+				domain += "."
+			}
+			if !seen[domain] {
+				seen[domain] = true
+				out = append(out, domain)
+			}
+		}
+	}
+	return out
 }
 
 func (a *App) DeleteImplantProfile(name string) error {

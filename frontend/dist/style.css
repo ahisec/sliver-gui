@@ -360,6 +360,18 @@ input::placeholder{color:var(--muted);}
 .status-msg{font-size:11px;margin-top:6px;}
 .status-msg.ok{color:var(--ok);}
 .status-msg.err{color:var(--accent);}
+.profile-editor{overflow:visible;}
+.profile-section{border:1px solid var(--border);padding:14px;margin:0 0 14px;min-width:0;}
+.profile-section legend{padding:0 7px;color:var(--cyan);font-size:11px;font-weight:700;}
+.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(170px,1fr));gap:12px;margin-bottom:12px;}
+.profile-checks{display:flex;flex-wrap:wrap;gap:8px 18px;margin:6px 0 12px;}
+.profile-section textarea{width:100%;box-sizing:border-box;resize:vertical;background:var(--panel-alt);color:var(--text);border:1px solid var(--border-hi);border-radius:6px;padding:8px 10px;font:12px var(--mono);line-height:1.5;outline:none;}
+.profile-section textarea:focus{border-color:var(--cyan);}
+.profile-list-row{padding:9px 10px;font-size:12.5px;display:grid;grid-template-columns:minmax(180px,1fr) minmax(120px,auto) auto auto;gap:10px;align-items:center;border-bottom:1px solid var(--border);}
+.profile-list-row>span:first-child{display:flex;flex-direction:column;gap:3px;min-width:0;}.profile-list-row small{color:var(--muted);}
+.profile-tags{display:flex;gap:5px;flex-wrap:wrap;}.profile-tags em{font-style:normal;color:var(--cyan);border:1px solid var(--border-hi);padding:2px 5px;border-radius:4px;font-size:10px;}
+@media (max-width:900px){.profile-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.profile-list-row{grid-template-columns:minmax(160px,1fr) auto auto}.profile-tags{display:none}}
+@media (max-width:560px){.profile-grid{grid-template-columns:1fr}.profile-list-row{grid-template-columns:1fr auto auto}.profile-section{padding:10px}}
 
 /* ── Script Manager Panel ──────────────────────────────────────────────────── */
 .scripts-panel { padding: 8px; display: flex; flex-direction: column; gap: 14px; height: 100%; box-sizing: border-border-box; }

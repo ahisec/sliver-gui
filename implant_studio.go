@@ -105,15 +105,25 @@ func validateGenerateRequest(req GenerateRequest) []string {
 	if !allowedFormat[strings.ToLower(req.Format)] {
 		errors = append(errors, "unsupported output format")
 	}
-	u, err := url.Parse(strings.TrimSpace(req.C2URL))
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		errors = append(errors, "C2 URL must include a supported scheme and host")
+	c2Entries := implantC2Entries(req)
+	if len(c2Entries) == 0 {
+		errors = append(errors, "at least one C2 URL is required")
+	}
+	for _, c2 := range c2Entries {
+		u, err := url.Parse(c2.URL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			errors = append(errors, "C2 URL must include a supported scheme and host")
+			break
+		}
 	}
 	if req.Beacon && (req.Interval <= 0 || req.Jitter < 0 || req.Jitter > req.Interval) {
 		errors = append(errors, "beacon interval must be positive and jitter must be between zero and the interval")
 	}
 	if req.ReconnectInterval < 0 || req.PollTimeout < 0 {
 		errors = append(errors, "reconnect interval and poll timeout cannot be negative")
+	}
+	if req.ConnectionStrategy != "" && req.ConnectionStrategy != "s" && req.ConnectionStrategy != "r" && req.ConnectionStrategy != "rd" {
+		errors = append(errors, "unsupported connection strategy")
 	}
 	if req.MetadataPath != "" && (req.GOOS != "windows" || req.Format == "shellcode") {
 		errors = append(errors, "executable metadata cloning only supports Windows PE outputs")
@@ -123,7 +133,11 @@ func validateGenerateRequest(req GenerateRequest) []string {
 
 func buildPreflight(req GenerateRequest, jobs []JobView, compiler CompilerView, builders []BuilderView, profiles []C2ProfileView, encoders []string) ImplantPreflight {
 	result := ImplantPreflight{Errors: validateGenerateRequest(req)}
-	requestedScheme := strings.ToLower(schemeOf(req.C2URL))
+	c2Entries := implantC2Entries(req)
+	requestedScheme := ""
+	if len(c2Entries) > 0 {
+		requestedScheme = strings.ToLower(schemeOf(c2Entries[0].URL))
+	}
 	for _, job := range jobs {
 		if strings.Contains(strings.ToLower(job.Name), requestedScheme) {
 			result.ListenerMatched = true

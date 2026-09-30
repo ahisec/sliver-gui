@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/bishopfox/sliver/protobuf/clientpb"
+)
 
 func TestListenerValidation(t *testing.T) {
 	if err := validateListenerHostPort("0.0.0.0", 8443); err != nil {
@@ -64,5 +70,87 @@ func TestBuildPreflight(t *testing.T) {
 	result = buildPreflight(req, nil, CompilerView{}, nil, nil, nil)
 	if result.Valid || len(result.Errors) < 3 {
 		t.Fatalf("expected unavailable dependencies: %+v", result)
+	}
+}
+
+func TestBuildImplantConfigAdvancedProfile(t *testing.T) {
+	req := GenerateRequest{
+		GOOS: "windows", GOARCH: "amd64", Format: "shared",
+		C2: []ImplantC2Input{
+			{URL: "https://one.example:443", Priority: 2, Options: "driver=winhttp"},
+			{URL: "dns://two.example", Priority: 1},
+		},
+		Evasion: true, ObfuscateSymbols: true, NetGo: true, RunAtLoad: true,
+		ConnectionStrategy: "r", ReconnectInterval: 45, MaxConnectionErrors: 12, PollTimeout: 90,
+		CanaryDomains:     []string{"first.example, second.example.", "first.example"},
+		LimitDomainJoined: true, LimitDatetime: " 2027-01-01T00:00:00Z ",
+		LimitHostname: " host-a ", LimitUsername: " alice ", LimitFileExists: " C:\\ready ", LimitLocale: " en-US ",
+	}
+	cfg := (&App{}).buildImplantConfig(req)
+	if len(cfg.C2) != 2 || cfg.C2[0].Priority != 2 || cfg.C2[0].Options != "driver=winhttp" {
+		t.Fatalf("unexpected C2 mapping: %+v", cfg.C2)
+	}
+	if !cfg.IncludeHTTP || !cfg.IncludeDNS || !cfg.Evasion || !cfg.ObfuscateSymbols || !cfg.NetGoEnabled || !cfg.RunAtLoad {
+		t.Fatalf("advanced flags were not mapped: %+v", cfg)
+	}
+	if cfg.ReconnectInterval != int64(45*time.Second) || cfg.PollTimeout != int64(90*time.Second) || cfg.MaxConnectionErrors != 12 {
+		t.Fatalf("connection settings were not mapped: %+v", cfg)
+	}
+	if !reflect.DeepEqual(cfg.CanaryDomains, []string{"first.example.", "second.example."}) {
+		t.Fatalf("unexpected canary domains: %#v", cfg.CanaryDomains)
+	}
+	if cfg.LimitDatetime != "2027-01-01T00:00:00Z" || cfg.LimitHostname != "host-a" || cfg.LimitUsername != "alice" {
+		t.Fatalf("execution limits were not normalized: %+v", cfg)
+	}
+}
+
+func TestBuildImplantConfigLegacyC2AndDebug(t *testing.T) {
+	cfg := (&App{}).buildImplantConfig(GenerateRequest{
+		GOOS: "linux", GOARCH: "amd64", Format: "exe", C2URL: "mtls://legacy.example:8888",
+		Debug: true, ObfuscateSymbols: true, RunAtLoad: true,
+	})
+	if len(cfg.C2) != 1 || cfg.C2[0].URL != "mtls://legacy.example:8888" || cfg.C2[0].Priority != 1 {
+		t.Fatalf("legacy C2 was not preserved: %+v", cfg.C2)
+	}
+	if cfg.ObfuscateSymbols || cfg.RunAtLoad {
+		t.Fatalf("debug/non-shared compatibility rules were not applied: %+v", cfg)
+	}
+}
+
+func TestBuildImplantConfigPivotTransportsKeepMTLSBaseline(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		included func(*clientpb.ImplantConfig) bool
+	}{
+		{name: "tcp pivot", url: "tcp-pivot://pivot.example:9898", included: func(cfg *clientpb.ImplantConfig) bool { return cfg.IncludeTCP }},
+		{name: "named pipe", url: "namedpipe://host/pipe/sliver", included: func(cfg *clientpb.ImplantConfig) bool { return cfg.IncludeNamePipe }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := (&App{}).buildImplantConfig(GenerateRequest{
+				GOOS: "windows", GOARCH: "amd64", Format: "exe", C2URL: tt.url,
+			})
+			if !tt.included(cfg) || !cfg.IncludeMTLS {
+				t.Fatalf("pivot transport or MTLS baseline missing: %+v", cfg)
+			}
+		})
+	}
+}
+
+func TestProfileViewFromConfig(t *testing.T) {
+	cfg := &clientpb.ImplantConfig{
+		GOOS: "darwin", GOARCH: "arm64", Format: clientpb.OutputFormat_SHELLCODE,
+		C2:      []*clientpb.ImplantC2{{URL: "https://one.example", Priority: 4, Options: "x=y"}},
+		Evasion: true, ObfuscateSymbols: true, NetGoEnabled: true,
+		BeaconInterval: 30 * int64(time.Second), BeaconJitter: 5 * int64(time.Second), IsBeacon: true,
+		LimitLocale: "en-US", CanaryDomains: []string{"canary.example."},
+	}
+	view := profileViewFromConfig("mac", cfg)
+	if view.Format != "shellcode" || view.C2URL != cfg.C2[0].URL || len(view.C2) != 1 || view.C2[0].Options != "x=y" {
+		t.Fatalf("unexpected profile view: %+v", view)
+	}
+	if !view.Evasion || !view.ObfuscateSymbols || !view.NetGo || view.Interval != 30 || view.Jitter != 5 {
+		t.Fatalf("advanced profile fields missing: %+v", view)
 	}
 }
