@@ -49,5 +49,11 @@
     return normalizeRpcError(error, context).message;
   }
 
-  return { normalizeRpcError, rpcErrorMessage };
+  function safeRpcErrorMessage(error, context = '') {
+    const result = normalizeRpcError(error, context);
+    if (result.code !== 'unknown') return result.message;
+    return context ? `${context}：请求失败，请在当前操作界面查看详情` : '请求失败，请在当前操作界面查看详情';
+  }
+
+  return { normalizeRpcError, rpcErrorMessage, safeRpcErrorMessage };
 });

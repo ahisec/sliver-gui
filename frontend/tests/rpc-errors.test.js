@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { normalizeRpcError, rpcErrorMessage } = require('../dist/rpc-errors.js');
+const { normalizeRpcError, rpcErrorMessage, safeRpcErrorMessage } = require('../dist/rpc-errors.js');
 
 test('translates common gRPC errors and keeps the original detail', () => {
   const result = normalizeRpcError(
@@ -42,5 +42,16 @@ test('translates operator configuration and connection failures', () => {
   assert.equal(
     rpcErrorMessage('dial example.test:31337: connection refused'),
     '团队服务器暂时不可用或连接已中断',
+  );
+});
+
+test('hides unknown backend details in task-safe summaries', () => {
+  assert.equal(
+    safeRpcErrorMessage('token=secret custom failure', '生成植入体失败'),
+    '生成植入体失败：请求失败，请在当前操作界面查看详情',
+  );
+  assert.equal(
+    safeRpcErrorMessage('rpc error: code = Unavailable desc = transport is closing', 'Beacon 命令提交失败'),
+    'Beacon 命令提交失败：团队服务器暂时不可用或连接已中断',
   );
 });

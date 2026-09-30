@@ -16,6 +16,8 @@ const EVENT_MAX = 500;
 const notesMap = {};          // agent id -> operator notes (in-memory, cleared on disconnect)
 const integrityMap = {};      // agent id -> real integrity level from getprivs (System/High/Medium/Low)
 let activeInteractId = null;  // currently focused agent tab
+const taskStore = TaskStore.createTaskStore({ limit: 100 });
+let taskCenterFilter = 'all';
 
 // ── Persistence ─────────────────────────────────────────────────────────────
 // Operator notes, measured integrity, and graph layout survive disconnects and
@@ -1242,17 +1244,30 @@ async function dispatchCmd(kind, id, raw) {
       return appendOut(id, '[+] interactive session requested — it will appear as a session on next check-in', 'ok');
     }
     const shellCmd = cmd === 'shell' ? args.join(' ') : raw;
-    const r = await App().ExecuteBeaconCommandAsync(id, shellCmd).catch(e => ({ error: String(e) }));
-    if (r.error) return appendOut(id, `[error] ${r.error}`, 'err');
+    const target = tab.obj?.hostname || id.slice(0, 8);
+    const localTask = taskStore.create({
+      type: 'beacon-command', title: 'Beacon 命令', target, agentId: id,
+      status: 'queued', summary: '正在提交到 Teamserver',
+    });
+    const r = await App().ExecuteBeaconCommandAsync(id, shellCmd).catch(error => ({ error }));
+    if (r.error) {
+      const info = rpcError(r.error, 'Beacon 命令提交失败');
+      const safeMessage = RpcErrors.safeRpcErrorMessage(r.error, 'Beacon 命令提交失败');
+      taskStore.update(localTask.id, { status: info.cancelled ? 'cancelled' : 'failed', summary: safeMessage, error: safeMessage });
+      return appendOut(id, `[error] ${info.message}`, 'err');
+    }
     if (r.status === 'completed') {
+      taskStore.update(localTask.id, { status: 'success', summary: '命令已完成' });
       if (r.stdout) appendOut(id, r.stdout.trimEnd(), 'out');
       if (r.stderr) appendOut(id, r.stderr.trimEnd(), 'err');
       return;
     }
     if (r.taskId) {
+      taskStore.update(localTask.id, { status: 'waiting', remoteTaskId: r.taskId, summary: '已排队，等待信标回连' });
       appendOut(id, `[*] task ${r.taskId.slice(0,8)} queued — polling for result...`, 'pending');
-      pollBeaconResult(id, r.taskId);
+      pollBeaconResult(id, r.taskId, localTask.id);
     } else {
+      taskStore.update(localTask.id, { status: 'waiting', summary: '命令已排队，等待信标回连' });
       appendOut(id, '[*] command queued — waiting for beacon check-in', 'pending');
     }
     return;
@@ -1797,22 +1812,31 @@ async function dispatchCmd(kind, id, raw) {
 // then prints its output. Non-blocking — the console stays usable meanwhile.
 // It uses the task LIST to detect state (reliable), then fetches the full body
 // via GetBeaconTaskResult only once the task is completed.
-function pollBeaconResult(id, taskId, tries = 0) {
-  if (!openTabs[id]) return;               // tab closed — stop
-  if (tries > 120) { appendOut(id, `[*] task ${taskId.slice(0,8)} still pending — the beacon has not checked in yet (interval/jitter). Use 'tasks' to check later.`, 'pending'); return; }
+function pollBeaconResult(id, taskId, localTaskId, tries = 0) {
+  if (tries > 120) {
+    taskStore.update(localTaskId, { status: 'waiting', summary: '仍在等待信标回连，请稍后复查' });
+    if (openTabs[id]) appendOut(id, `[*] task ${taskId.slice(0,8)} still pending — the beacon has not checked in yet (interval/jitter). Use 'tasks' to check later.`, 'pending');
+    return;
+  }
   setTimeout(async () => {
     const tasks = await App().GetBeaconTasks(id).catch(() => null);
-    if (!tasks) { pollBeaconResult(id, taskId, tries + 1); return; }
+    if (!tasks) { pollBeaconResult(id, taskId, localTaskId, tries + 1); return; }
     const t = tasks.find(x => x.id === taskId);
-    if (!t) { pollBeaconResult(id, taskId, tries + 1); return; }
+    if (!t) { pollBeaconResult(id, taskId, localTaskId, tries + 1); return; }
     if (t.state === 'completed') {
       const full = await App().GetBeaconTaskResult(taskId).catch(() => null);
-      appendOut(id, `[+] task ${taskId.slice(0,8)} completed`, 'ok');
-      appendOut(id, (((full && full.response) || t.response) || '(no output)').trimEnd(), 'out');
+      taskStore.update(localTaskId, { status: 'success', summary: '命令已完成并返回结果' });
+      if (openTabs[id]) {
+        appendOut(id, `[+] task ${taskId.slice(0,8)} completed`, 'ok');
+        appendOut(id, (((full && full.response) || t.response) || '(no output)').trimEnd(), 'out');
+      }
     } else if (t.state === 'failed' || t.state === 'canceled') {
-      appendOut(id, `[error] task ${t.state}`, 'err');
+      const cancelled = t.state === 'canceled';
+      const summary = cancelled ? '任务已取消' : 'Teamserver 报告任务失败';
+      taskStore.update(localTaskId, { status: cancelled ? 'cancelled' : 'failed', summary, error: summary });
+      if (openTabs[id]) appendOut(id, `[error] task ${t.state}`, 'err');
     } else {
-      pollBeaconResult(id, taskId, tries + 1);
+      pollBeaconResult(id, taskId, localTaskId, tries + 1);
     }
   }, 3000);
 }
@@ -1904,6 +1928,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
     btn.classList.add('active');
     if (view === 'sessions' || view === 'beacons') { hideModal(); refreshAgents(); return; }
     if (view === 'listeners') openListenersPanel();
+    if (view === 'tasks') openTaskCenter();
     if (view === 'generate') openGeneratePanel();
     if (view === 'builds') openBuildsPanel();
     if (view === 'profiles') openProfilesPanel();
@@ -1971,6 +1996,71 @@ async function openCompatibilityPanel() {
     <div class="compat-list">${items || '<div class="compat-error">没有返回能力信息。</div>'}</div>`;
 }
 document.getElementById('compatibility-btn').addEventListener('click', openCompatibilityPanel);
+
+const taskStatusMeta = {
+  queued: { label: '排队中', cls: 'queued' },
+  running: { label: '运行中', cls: 'running' },
+  waiting: { label: '等待回连', cls: 'waiting' },
+  success: { label: '成功', cls: 'success' },
+  failed: { label: '失败', cls: 'failed' },
+  cancelled: { label: '已取消', cls: 'cancelled' },
+};
+
+function formatTaskTime(timestamp) {
+  return timestamp ? new Date(timestamp).toLocaleTimeString() : '-';
+}
+
+function formatTaskDuration(task) {
+  const seconds = Math.floor(TaskStore.durationMs(task) / 1000);
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} 分 ${seconds % 60} 秒`;
+}
+
+function renderTaskCenter() {
+  const list = document.getElementById('task-center-list');
+  if (!list) return;
+  document.querySelectorAll('[data-task-filter]').forEach(button => {
+    button.classList.toggle('active', button.dataset.taskFilter === taskCenterFilter);
+  });
+  const tasks = taskStore.list(taskCenterFilter);
+  if (!tasks.length) {
+    list.innerHTML = '<div class="task-empty">当前筛选条件下暂无任务。</div>';
+    return;
+  }
+  list.innerHTML = `<div class="task-table-wrap"><table class="data-table task-table">
+    <thead><tr><th>状态</th><th>任务</th><th>目标</th><th>开始时间</th><th>耗时</th><th>结果摘要</th></tr></thead>
+    <tbody>${tasks.map(task => {
+      const status = taskStatusMeta[task.status] || { label: task.status, cls: 'queued' };
+      const remoteId = task.remoteTaskId ? `<div class="task-remote-id">${esc(task.remoteTaskId.slice(0, 12))}</div>` : '';
+      return `<tr><td><span class="task-status ${status.cls}">${status.label}</span></td>
+        <td><strong>${esc(task.title)}</strong>${remoteId}</td><td>${esc(task.target)}</td>
+        <td>${esc(formatTaskTime(task.startedAt))}</td><td>${esc(formatTaskDuration(task))}</td>
+        <td class="task-summary">${esc(task.summary || '-')}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+function openTaskCenter() {
+  const filters = [
+    ['all', '全部'], ['active', '进行中'], ['completed', '已完成'], ['failed', '失败/取消'],
+  ];
+  const content = `<div class="task-center">
+    <div class="task-toolbar">
+      <div class="task-filters">${filters.map(([value, label]) => `<button class="vb-btn" data-task-filter="${value}">${label}</button>`).join('')}</div>
+      <span class="spacer"></span><button class="btn small" id="task-clear-completed">清理已结束</button>
+    </div>
+    <div class="task-note">仅保留本次运行中最近 100 条任务，不记录命令正文、C2 URL 或原始错误详情。</div>
+    <div id="task-center-list"></div>
+  </div>`;
+  openViewPanel('_tasks', '任务中心', content);
+  document.querySelectorAll('[data-task-filter]').forEach(button => button.addEventListener('click', () => {
+    taskCenterFilter = button.dataset.taskFilter;
+    renderTaskCenter();
+  }));
+  document.getElementById('task-clear-completed')?.addEventListener('click', () => taskStore.clearCompleted());
+  renderTaskCenter();
+}
+taskStore.subscribe(renderTaskCenter);
 
 // ── Script Manager Panel (Cobalt Strike-style lateral movement / privesc / persistence) ──
 // ── Script Manager Panel (Cobalt Strike-style lateral movement / privesc / persistence) ──
@@ -2925,13 +3015,22 @@ function openGeneratePanel() {
       const req = { name:f.name.value, goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2Url:f.c2Url.value, debug:f.debug.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0 };
       document.getElementById('gen-status').style.display = 'flex';
       document.getElementById('gen-result').textContent = '';
+      const generationTask = taskStore.create({
+        type: 'implant-generate', title: '生成植入体',
+        target: `${req.goos}/${req.goarch} · ${req.format}`,
+        status: 'running', summary: 'Teamserver 正在构建植入体',
+      });
       const r = await App().GenerateImplant(req).catch(error => ({error}));
       document.getElementById('gen-status').style.display = 'none';
       const res = document.getElementById('gen-result');
       if (r.error) {
+        const info = rpcError(r.error, '生成植入体失败');
+        const safeMessage = RpcErrors.safeRpcErrorMessage(r.error, '生成植入体失败');
+        taskStore.update(generationTask.id, { status: info.cancelled ? 'cancelled' : 'failed', summary: safeMessage, error: safeMessage });
         res.innerHTML = rpcErrorHtml(r.error, '生成植入体失败');
         res.style.color = '';
       } else {
+        taskStore.update(generationTask.id, { status: 'success', summary: `已创建构建：${r.name || r.file || '未命名构建'}` });
         res.style.color = 'var(--ok)';
         res.innerHTML = `<span>[成功] 已创建构建：${esc(r.name || r.file)}</span> <button class="btn small" style="margin-left:10px" onclick="buildRegen('${esc(r.name || r.file)}')">⬇ 保存到磁盘</button>`;
         // Auto-trigger the native save dialog immediately
@@ -2956,7 +3055,7 @@ function openPalette() {
 function closePalette() { document.getElementById('palette-overlay').classList.add('hidden'); }
 function buildPalette(q) {
   q = q.toLowerCase();
-  const panels = ['sessions','beacons','listeners','generate','builds','profiles','events','loot','operators'];
+  const panels = ['sessions','beacons','tasks','listeners','generate','builds','profiles','events','loot','operators'];
   const items = [];
   [...allSessions.map(s => ({ kind:'session', obj:s })), ...allBeacons.map(b => ({ kind:'beacon', obj:b }))].forEach(a => {
     const label = `${a.kind==='session'?'💻':'📡'} ${a.obj.hostname||a.obj.id.slice(0,8)} — ${a.obj.username||''}`;
