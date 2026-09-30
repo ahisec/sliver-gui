@@ -2313,6 +2313,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
     if (view === 'infrastructure') openInfrastructurePanel();
     if (view === 'extensions') openExtensionCenter();
     if (view === 'team') openTeamCenter();
+    if (view === 'mcp') openMCPPanel();
   });
 });
 
@@ -2322,7 +2323,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
 function openViewPanel(id, title, content) {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = content;
-  document.querySelector('#modal-overlay .modal')?.classList.toggle('wide', ['_infrastructure','_extensions','_team','_profiles','_builds','_listeners','scripts','c2profiles','_c2edit','_c2view'].includes(id));
+  document.querySelector('#modal-overlay .modal')?.classList.toggle('wide', ['_infrastructure','_extensions','_team','_profiles','_builds','_listeners','scripts','c2profiles','_c2edit','_c2view','_mcp'].includes(id));
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 function hideModal() { document.getElementById('modal-overlay').classList.add('hidden'); }
@@ -2370,9 +2371,90 @@ async function openCompatibilityPanel() {
       <div><span>检测时间</span><strong>${esc(generatedAt)}</strong></div>
     </div>
     <div class="compat-note">此页面仅调用只读 RPC，不会修改远程团队服务器配置。</div>
+    <section class="compat-item">
+      <div class="compat-item-head">
+        <div><h3>客户端侧 MCP</h3><p>当前 GUI 依赖已包含实验性 MCP HTTP/SSE 服务。服务在本机运行并复用当前连接，不表示远程 Teamserver 自身开放了 MCP。</p></div>
+        <span class="compat-badge ok">可用</span>
+      </div>
+      <div class="compat-tags"><span>按工具依赖 RPC</span><span>旧服务器可能只支持部分工具</span><span>默认仅监听环回地址</span></div>
+    </section>
     <div class="compat-list">${items || '<div class="compat-error">没有返回能力信息。</div>'}</div>`;
 }
 document.getElementById('compatibility-btn').addEventListener('click', openCompatibilityPanel);
+
+function mcpStatusHtml(status = {}) {
+  const running = !!status.running;
+  const tools = status.tools || [];
+  return `<div class="mcp-center">
+    <div class="mcp-banner"><div><strong>实验性客户端服务</strong><p>MCP 在本机 GUI 进程内运行，并复用当前 Teamserver 连接。旧服务器缺少的 RPC 会在对应工具调用时返回错误。</p></div><span class="mcp-state ${running ? 'running' : 'stopped'}">${running ? '运行中' : '已停止'}</span></div>
+    <div class="mcp-layout">
+      <section class="mcp-config">
+        <div class="section-heading"><div><h3>服务配置</h3><p>默认仅允许本机客户端访问。</p></div></div>
+        <div class="gen-row">
+          <div class="gen-field"><label for="mcp-transport">传输方式</label><select id="mcp-transport" ${running ? 'disabled' : ''}><option value="http" ${status.transport === 'http' ? 'selected' : ''}>HTTP</option><option value="sse" ${status.transport !== 'http' ? 'selected' : ''}>SSE</option></select></div>
+          <div class="gen-field"><label for="mcp-address">监听地址</label><input id="mcp-address" value="${esc(status.listenAddress || '127.0.0.1:8080')}" ${running ? 'disabled' : ''}/></div>
+        </div>
+        <div class="mcp-actions"><button id="mcp-toggle" class="btn ${running ? '' : 'accent'}">${running ? '停止服务' : '启动服务'}</button><button id="mcp-refresh" class="btn">刷新状态</button><span id="mcp-action-result"></span></div>
+      </section>
+      <section class="mcp-details">
+        <div class="section-heading"><div><h3>连接信息</h3><p>完整令牌不会进入页面状态或操作日志。</p></div></div>
+        <dl class="mcp-kv">
+          <div><dt>端点</dt><dd><code>${esc(status.endpoint || '-')}</code>${running ? '<button id="mcp-copy-endpoint" class="btn small">复制</button>' : ''}</dd></div>
+          <div><dt>认证请求头</dt><dd><code>${esc(status.authHeader || 'Authorization')}</code></dd></div>
+          <div><dt>认证令牌</dt><dd><code>${esc(status.maskedToken || '-')}</code>${running ? '<button id="mcp-copy-token" class="btn small">复制令牌</button>' : ''}</dd></div>
+          <div><dt>认证配置</dt><dd><code>${esc(status.authConfigPath || '-')}</code></dd></div>
+          <div><dt>启动时间</dt><dd><code>${esc(status.startedAt || '-')}</code></dd></div>
+        </dl>
+      </section>
+    </div>
+    ${status.lastError ? `<div class="compat-error"><strong>最近错误</strong><span>${esc(status.lastError)}</span></div>` : ''}
+    <section class="mcp-tools"><div class="section-heading"><div><h3>当前官方工具</h3><p>工具是否可执行取决于远程 Teamserver 对底层 RPC 的支持。</p></div><span>${tools.length} 项</span></div><div class="compat-tags">${tools.map(tool => `<span>${esc(tool)}</span>`).join('')}</div></section>
+  </div>`;
+}
+
+async function renderMCPPanel(status) {
+  const body = document.getElementById('modal-body');
+  if (!body || document.getElementById('modal-overlay').classList.contains('hidden')) return;
+  body.innerHTML = mcpStatusHtml(status);
+  document.getElementById('mcp-refresh')?.addEventListener('click', openMCPPanel);
+  document.getElementById('mcp-copy-endpoint')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(status.endpoint); toast('ok', 'MCP 端点已复制'); }
+    catch (error) { toastRpcError(error, '复制端点失败'); }
+  });
+  document.getElementById('mcp-copy-token')?.addEventListener('click', async () => {
+    try { await App().CopyMCPToken(); toast('ok', 'MCP 令牌已复制到系统剪贴板'); }
+    catch (error) { toastRpcError(error, '复制令牌失败'); }
+  });
+  document.getElementById('mcp-toggle')?.addEventListener('click', async () => {
+    const result = document.getElementById('mcp-action-result');
+    result.textContent = status.running ? '正在停止...' : '正在启动...';
+    try {
+      if (status.running) await App().StopMCP();
+      else {
+        const transport = document.getElementById('mcp-transport').value;
+        const listenAddress = document.getElementById('mcp-address').value.trim() || '127.0.0.1:8080';
+        const host = listenAddress.startsWith('[') ? listenAddress.slice(1, listenAddress.indexOf(']')) : listenAddress.slice(0, listenAddress.lastIndexOf(':'));
+        const loopback = ['127.0.0.1', '::1', 'localhost'].includes(host.toLowerCase());
+        let allowNonLoopback = false;
+        if (!loopback) {
+          allowNonLoopback = await uiConfirm(`监听 ${listenAddress} 可能让网络中的其他设备访问 MCP 服务。认证令牌仍然必需，是否继续？`, { title:'确认非本机监听', okLabel:'继续启动', danger:true });
+          if (!allowNonLoopback) { result.textContent = ''; return; }
+        }
+        await App().StartMCP({ transport, listenAddress, allowNonLoopback });
+      }
+      await openMCPPanel();
+    } catch (error) {
+      result.textContent = rpcError(error, status.running ? '停止 MCP 失败' : '启动 MCP 失败').message;
+      result.className = 'mcp-action-error';
+    }
+  });
+}
+
+async function openMCPPanel() {
+  openViewPanel('_mcp', 'MCP 服务', '<div class="compat-loading"><span class="spinner"></span>正在读取 MCP 服务状态...</div>');
+  try { await renderMCPPanel(await App().GetMCPStatus()); }
+  catch (error) { document.getElementById('modal-body').innerHTML = rpcErrorHtml(error, '读取 MCP 状态失败'); }
+}
 
 const INFRA_ROUTE_LABELS = {
   socks: 'SOCKS', forward: '正向转发', 'reverse-forward': '反向转发',
@@ -4102,7 +4184,7 @@ function openPalette() {
 function closePalette() { document.getElementById('palette-overlay').classList.add('hidden'); }
 function buildPalette(q) {
   q = q.toLowerCase();
-  const panels = ['sessions','beacons','tasks','listeners','generate','builds','profiles','events','loot','operators'];
+  const panels = ['sessions','beacons','tasks','listeners','generate','builds','profiles','events','loot','creds','hosts','operators','scripts','iocs','c2profiles','infrastructure','extensions','team','mcp'];
   const items = [];
   [...allSessions.map(s => ({ kind:'session', obj:s })), ...allBeacons.map(b => ({ kind:'beacon', obj:b }))].forEach(a => {
     const label = `${a.kind==='session'?'💻':'📡'} ${a.obj.hostname||a.obj.id.slice(0,8)} — ${a.obj.username||''}`;

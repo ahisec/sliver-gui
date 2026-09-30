@@ -59,6 +59,62 @@ func TestJoinRemotePath(t *testing.T) {
 	}
 }
 
+func TestValidateMCPListenAddress(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:8080", "[::1]:8080", "localhost:8080"} {
+		if err := validateMCPListenAddress(address, false); err != nil {
+			t.Errorf("loopback %q rejected: %v", address, err)
+		}
+	}
+	if err := validateMCPListenAddress("0.0.0.0:8080", false); err == nil {
+		t.Fatal("wildcard listen accepted without confirmation")
+	}
+	if err := validateMCPListenAddress("0.0.0.0:8080", true); err != nil {
+		t.Fatalf("confirmed wildcard listen rejected: %v", err)
+	}
+	if err := validateMCPListenAddress("127.0.0.1", false); err == nil {
+		t.Fatal("address without port accepted")
+	}
+	for _, address := range []string{"127.0.0.1:http", "127.0.0.1:0", "127.0.0.1:65536"} {
+		if err := validateMCPListenAddress(address, false); err == nil {
+			t.Errorf("invalid port in %q accepted", address)
+		}
+	}
+	for _, address := range []string{":8080", "[::]:8080", "teamserver.example:8080"} {
+		if err := validateMCPListenAddress(address, false); err == nil {
+			t.Errorf("non-loopback %q accepted without confirmation", address)
+		}
+		if err := validateMCPListenAddress(address, true); err != nil {
+			t.Errorf("confirmed non-loopback %q rejected: %v", address, err)
+		}
+	}
+}
+
+func TestMaskMCPToken(t *testing.T) {
+	if got := maskMCPToken("0123456789abcdef"); got != "****cdef" {
+		t.Fatalf("maskMCPToken = %q", got)
+	}
+	if got := maskMCPToken(""); got != "" {
+		t.Fatalf("empty token mask = %q", got)
+	}
+}
+
+func TestStartMCPRequiresConnection(t *testing.T) {
+	app := NewApp()
+	if _, err := app.StartMCP(MCPStartRequest{}); err == nil {
+		t.Fatal("StartMCP without a Teamserver connection succeeded")
+	}
+}
+
+func TestStopMCPIsIdempotent(t *testing.T) {
+	app := NewApp()
+	if err := app.StopMCP(); err != nil {
+		t.Fatalf("first StopMCP returned %v", err)
+	}
+	if err := app.StopMCP(); err != nil {
+		t.Fatalf("second StopMCP returned %v", err)
+	}
+}
+
 func TestFormatFromString(t *testing.T) {
 	cases := map[string]clientpb.OutputFormat{
 		"shared":    clientpb.OutputFormat_SHARED_LIB,

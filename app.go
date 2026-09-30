@@ -60,6 +60,7 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) { a.ctx = ctx }
 func (a *App) shutdown(ctx context.Context) {
+	_ = a.StopMCP()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.eventCancel != nil {
@@ -145,6 +146,7 @@ func (a *App) Connect(configPath string) ConnectResult {
 	if err != nil {
 		return ConnectResult{Error: err.Error()}
 	}
+	_ = a.StopMCP()
 	a.mu.Lock()
 	if a.client != nil {
 		a.client.Close()
@@ -169,6 +171,7 @@ func (a *App) Connect(configPath string) ConnectResult {
 }
 
 func (a *App) Disconnect() {
+	_ = a.StopMCP()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.eventCancel != nil {
@@ -202,6 +205,7 @@ func (a *App) startEventStream() {
 	go func() {
 		stream, err := client.RPC.Events(streamCtx, &commonpb.Empty{})
 		if err != nil {
+			_ = a.StopMCP()
 			runtime.EventsEmit(a.ctx, "sliver:disconnected", err.Error())
 			return
 		}
@@ -212,6 +216,7 @@ func (a *App) startEventStream() {
 				// show the reconnect overlay. Suppress if this was a clean
 				//, operator-initiated Disconnect() (context cancelled).
 				if streamCtx.Err() == nil {
+					_ = a.StopMCP()
 					runtime.EventsEmit(a.ctx, "sliver:disconnected", err.Error())
 				}
 				return
