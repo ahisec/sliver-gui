@@ -1350,6 +1350,9 @@ func rportAddrString(addr string, port uint32) string {
 }
 
 func (a *App) StartRportFwd(sessionID, bindAddr string, bindPort int, fwdAddr string, fwdPort int) error {
+	if result := validateNetworkRoute("reverse-forward", rportJoinHostPort(bindAddr, bindPort), rportJoinHostPort(fwdAddr, fwdPort)); !result.Valid {
+		return fmt.Errorf("invalid reverse forward: %s", strings.Join(result.Errors, "; "))
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err
@@ -1687,6 +1690,9 @@ func (a *App) MsfRemoteInject(sessionID, payload, lhost string, lport, pid uint3
 // ─── WireGuard tunneling (session, WG implants) ─────────────────────────────────
 
 func (a *App) WGStartPortForward(sessionID string, localPort int, remoteAddr string) error {
+	if result := validateNetworkRoute("wireguard-forward", fmt.Sprintf("127.0.0.1:%d", localPort), remoteAddr); !result.Valid {
+		return fmt.Errorf("invalid WireGuard forward: %s", strings.Join(result.Errors, "; "))
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err
@@ -1713,6 +1719,9 @@ func (a *App) WGStopPortForward(sessionID string, id int) error {
 }
 
 func (a *App) WGStartSocks(sessionID string, port int) error {
+	if err := validateTCPPort(port); err != nil {
+		return fmt.Errorf("invalid WireGuard SOCKS port: %w", err)
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err
@@ -2364,6 +2373,13 @@ func (a *App) ListPivots(sessionID string) ([]PivotView, error) {
 // StartPivotListener starts a TCP or named-pipe pivot on the implant.
 // pivotType: "tcp" or "pipe". bindAddress e.g. "0.0.0.0:9898" (tcp) or a pipe name.
 func (a *App) StartPivotListener(sessionID, pivotType, bindAddress string) error {
+	kind := "pivot-tcp"
+	if strings.Contains(strings.ToLower(pivotType), "pipe") {
+		kind = "pivot-pipe"
+	}
+	if result := validateNetworkRoute(kind, bindAddress, ""); !result.Valid {
+		return fmt.Errorf("invalid pivot listener: %s", strings.Join(result.Errors, "; "))
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err
@@ -2406,6 +2422,9 @@ type socksProxyHandle struct {
 }
 
 func (a *App) StartSocksProxy(sessionID string, localPort int) error {
+	if err := validateTCPPort(localPort); err != nil {
+		return fmt.Errorf("invalid SOCKS port: %w", err)
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err
@@ -2552,6 +2571,9 @@ type PortForwardView struct {
 }
 
 func (a *App) AddPortForward(sessionID string, localPort int, remoteHost string, remotePort int) error {
+	if result := validateNetworkRoute("forward", fmt.Sprintf("127.0.0.1:%d", localPort), net.JoinHostPort(remoteHost, fmt.Sprint(remotePort))); !result.Valid {
+		return fmt.Errorf("invalid port forward: %s", strings.Join(result.Errors, "; "))
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err

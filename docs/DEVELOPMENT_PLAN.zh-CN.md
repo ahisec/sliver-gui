@@ -226,11 +226,11 @@ C2 配置
 
 任务：
 
-- [ ] 完善 Teamserver、Session、Beacon、Pivot 的拓扑表达。
-- [ ] 在拓扑中显示 Pivot 类型、监听地址、在线状态和影响范围。
-- [ ] 集中管理 SOCKS、正向转发、反向转发和 WireGuard 转发。
-- [ ] 增加端口冲突、地址格式和目标可达性的前置校验。
-- [ ] 节点失联时标记受影响的下游路径。
+- [x] 完善 Teamserver、Session、Beacon、Pivot 的拓扑表达。
+- [x] 在拓扑中显示 Pivot 类型、监听地址、在线状态和影响范围。
+- [x] 集中管理 SOCKS、正向转发、反向转发和 WireGuard 转发。
+- [x] 增加端口冲突、地址格式和目标可达性的前置校验。
+- [x] 节点失联时标记受影响的下游路径。
 
 完成标准：
 
@@ -363,6 +363,7 @@ node --check frontend/dist/main.js
 3. 建立最小任务中心，先接入 Beacon Task 和 Implant Generate。
 4. 将 Session/Beacon 详情逐步整理为标签式工作区。
 5. 再进入 Listener、C2 Profile 和 Implant Studio 的流程整合。
+6. [已完成] 为目标控制台和 Teamserver 管理控制台增加上下文相关的 Tab 命令补全。
 
 第一项只读取远程 Teamserver 已公开的信息，不修改远程配置，适合作为增强工作的起点。
 

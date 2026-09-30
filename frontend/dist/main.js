@@ -538,6 +538,15 @@ function renderGraph() {
       if (p) (kidsOf[p] = kidsOf[p] || []).push(nd.obj.id);
     });
     const roots = nodes.filter(nd => !parentNodeId[nd.obj.id]).map(nd => nd.obj.id);
+    const downstreamCount = id => (kidsOf[id] || []).reduce((total, child) => total + 1 + downstreamCount(child), 0);
+    const affectedByOfflineParent = id => {
+      let parent = parentNodeId[id], hops = 0;
+      while (parent && hops++ <= nodes.length) {
+        if (nodeByID[parent]?.obj?.isDead) return true;
+        parent = parentNodeId[parent];
+      }
+      return false;
+    };
 
     // Tidy left-to-right tree: x = depth column, y = leaf order (parents centred
     // on the span of their children). rowH > node height so labels never overlap.
@@ -626,9 +635,11 @@ function renderGraph() {
     // Agent nodes
     nodes.forEach(nd => {
       const o    = nd.obj, p = posOf(o.id), dead = o.isDead, priv = isPrivileged(o);
+      const affected = affectedByOfflineParent(o.id);
+      const descendants = downstreamCount(o.id);
       const isJumpRelated = jumpEdgeSet.size > 0 &&
         [...jumpEdgeSet].some(k => k.startsWith(o.id + ':') || k.endsWith(':' + o.id));
-      html += `<g class="gnode${dead ? ' dead' : ''}" data-id="${esc(o.id)}" transform="translate(${p.x},${p.y})" style="cursor:grab">`;
+      html += `<g class="gnode${dead ? ' dead' : ''}${affected ? ' affected' : ''}" data-id="${esc(o.id)}" transform="translate(${p.x},${p.y})" style="cursor:grab"><title>${esc(`${o.hostname || o.id} · ${o.transport || '未知传输'} · 下游 ${descendants} 个${affected ? ' · 受失联上游影响' : ''}`)}</title>`;
       html += '<rect x="-30" y="-34" width="60" height="94" fill="transparent"/>';
       if (o.id === activeInteractId)
         html += '<rect x="-33" y="-33" width="66" height="64" rx="4" fill="none" stroke="#35c46b" stroke-width="1.5" stroke-dasharray="5 4"/>';
@@ -636,11 +647,12 @@ function renderGraph() {
         html += '<rect x="-33" y="-33" width="66" height="64" rx="4" fill="none" stroke="#f5a623" stroke-width="1.2" stroke-dasharray="6 4" opacity="0.65"/>';
       html += `<image href="${osIconHref(o.os, priv, dead)}" x="-26" y="-26" width="52" height="52" pointer-events="none"/>`;
       const user = shortUser(o.username) + (priv && !dead ? ' *' : '');
-      const l2   = `${o.hostname || o.id.slice(0, 6)}${o.pid ? ' @ ' + o.pid : ''}`;
+      const l2   = `${o.hostname || o.id.slice(0, 6)} · ${o.transport || '-'}${descendants ? ` · ↓${descendants}` : ''}`;
       const lc   = dead ? 'var(--muted)' : (priv ? 'var(--accent)' : 'var(--text)');
       html += `<text y="40" text-anchor="middle" fill="${lc}" font-size="10" font-weight="bold" font-family="var(--font)" pointer-events="none">${esc(user)}</text>`;
       html += `<text y="51" text-anchor="middle" fill="var(--muted)" font-size="8.5" font-family="var(--mono)" pointer-events="none">${esc(l2)}</text>`;
       if (dead) html += '<text y="-30" text-anchor="middle" fill="var(--muted)" font-size="8" font-weight="bold" font-family="var(--mono)" pointer-events="none">离线</text>';
+      else if (affected) html += '<text y="-30" text-anchor="middle" fill="#f5a623" font-size="8" font-weight="bold" font-family="var(--mono)" pointer-events="none">上游失联</text>';
       html += '</g>';
     });
 
@@ -787,6 +799,43 @@ document.getElementById('ctx-kill').addEventListener('click', async () => {
 });
 
 // ── Interaction panel ──────────────────────────────────────────────────────
+const AGENT_COMMAND_SCHEMA = {
+  commands: [
+    'help','info','clear','shell','pty','execute','grep','mount','memfiles','ssh','ps','ls','cd','pwd',
+    'download','upload','cat','mkdir','rm','mv','cp','screenshot','netstat','ifconfig','env','getenv',
+    'setenv','unsetenv','reg','whoami','getprivs','procdump','kill','loot','chmod','chown','getsystem',
+    'make-token','impersonate','rev2self','runas','migrate','execute-assembly','execute-shellcode','sideload',
+    'spawndll','extensions','ext','wasm','execute-windows','ping','wg-forwarders','wg-list-socks','close',
+    'backdoor','dllhijack','msf','msf-inject','socks','portfwd','rportfwd','wg-portfwd','wg-socks','pivot',
+    'services','tasks','reconfig','interactive','spawn','jump','privesc-check','harvest','ad-enum','local-enum',
+    'kerberoast','persist','scan',
+  ],
+  arguments: {
+    socks: { 0: ['start','stop','status'] }, portfwd: { 0: ['add','rm','list'] },
+    rportfwd: { 0: ['add','rm','list'] }, 'wg-portfwd': { 0: ['add','rm'] },
+    pivot: { 0: ['start','stop','list'], 1: ['tcp','pipe'] },
+    services: { 0: ['detail','start'] }, loot: { 0: ['add','rm'] },
+    wasm: { 0: ['list','register','exec'] }, memfiles: { 0: ['list','add','rm'] },
+    reg: { 0: ['query','read','write','read-hive'] }, spawn: { 0: ['windows','linux'] },
+    jump: { 0: ['ssh','psexec','winrm','wmi'] }, persist: { 0: ['cron','reg','schtask','service'] },
+  },
+};
+
+function attachCommandCompletion(input, schema, dynamicCandidates) {
+  const popup = document.createElement('div');
+  popup.className = 'command-completions hidden';
+  input.parentElement.appendChild(popup);
+  CommandCompletion.attach(input, {
+    schema,
+    dynamicCandidates,
+    render(matches, active = -1) {
+      popup.classList.toggle('hidden', !matches.length);
+      popup.innerHTML = matches.slice(0, 8).map((value, index) =>
+        `<span class="${index === active ? 'active' : ''}">${esc(value)}</span>`).join('');
+    },
+  });
+}
+
 function openInteract(kind, obj) {
   const id = obj.id;
   if (openTabs[id]) { activateTab(id); return; }
@@ -865,6 +914,7 @@ function openInteract(kind, obj) {
   // Wire input
   const inp = document.getElementById(`cinp-${id}`);
   const hist = []; let hIdx = -1;
+  attachCommandCompletion(inp, AGENT_COMMAND_SCHEMA);
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter') { runAgentCmd(kind, id, inp, hist); hIdx = -1; }
     if (e.key === 'ArrowUp') { if (hIdx < hist.length-1) { hIdx++; inp.value = hist[hIdx]; } e.preventDefault(); }
@@ -2098,6 +2148,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
     if (view === 'iocs') openIOCPanel();
     if (view === 'report') exportReport();
     if (view === 'c2profiles') openC2ProfileEditor();
+    if (view === 'infrastructure') openInfrastructurePanel();
   });
 });
 
@@ -2107,6 +2158,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
 function openViewPanel(id, title, content) {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = content;
+  document.querySelector('#modal-overlay .modal')?.classList.toggle('wide', ['_infrastructure','_extensions','_team'].includes(id));
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 function hideModal() { document.getElementById('modal-overlay').classList.add('hidden'); }
@@ -2157,6 +2209,150 @@ async function openCompatibilityPanel() {
     <div class="compat-list">${items || '<div class="compat-error">没有返回能力信息。</div>'}</div>`;
 }
 document.getElementById('compatibility-btn').addEventListener('click', openCompatibilityPanel);
+
+const INFRA_ROUTE_LABELS = {
+  socks: 'SOCKS', forward: '正向转发', 'reverse-forward': '反向转发',
+  'wireguard-forward': 'WireGuard 转发', 'wireguard-socks': 'WireGuard SOCKS',
+  'pivot-tcp': 'Pivot TCP', 'pivot-pipe': 'Pivot 命名管道', 'pivot-namedpipe': 'Pivot 命名管道',
+};
+
+function endpointParts(value) {
+  const text = String(value || '').trim();
+  if (text.startsWith('[')) {
+    const end = text.indexOf(']');
+    return { host: text.slice(1, end), port: Number(text.slice(end + 2)) };
+  }
+  const split = text.lastIndexOf(':');
+  return { host: text.slice(0, split), port: Number(text.slice(split + 1)) };
+}
+
+async function openInfrastructurePanel() {
+  openViewPanel('_infrastructure', '网络基础设施', '<div class="infra-loading"><span class="spinner"></span>正在汇总 Pivot 与活动转发...</div>');
+  let snapshot;
+  try { snapshot = await App().GetInfrastructureSnapshot(); }
+  catch (error) {
+    document.getElementById('modal-body').innerHTML = rpcErrorHtml(error, '加载基础设施失败');
+    return;
+  }
+  renderInfrastructurePanel(snapshot || { nodes: [], routes: [], warnings: [] });
+}
+
+function renderInfrastructurePanel(snapshot) {
+  const nodes = snapshot.nodes || [], routes = snapshot.routes || [];
+  const sessionOptions = nodes.filter(node => node.status === 'online').map(node =>
+    `<option value="${esc(node.id)}">${esc(node.name || node.id.slice(0, 8))} · ${esc(node.transport || '未知传输')}</option>`).join('');
+  const routeOptions = Object.entries(INFRA_ROUTE_LABELS).filter(([key]) => key !== 'pivot-namedpipe').map(([key, value]) => `<option value="${key}">${value}</option>`).join('');
+  const nodeRows = nodes.map(node => {
+    const impacted = node.downstream || [];
+    const parent = nodes.find(item => item.id === node.parentId);
+    return `<div class="infra-node ${node.status === 'offline' ? 'offline' : ''}">
+      <div class="infra-node-head"><strong>${esc(node.name || node.id.slice(0, 8))}</strong><span class="state ${esc(node.status)}">${node.status === 'online' ? '在线' : '离线'}</span></div>
+      <div>${esc(node.address || '-')} · ${esc(node.transport || '未知传输')}</div>
+      <div>上游：${esc(parent?.name || (node.parentId ? node.parentId.slice(0, 8) : 'Teamserver'))}</div>
+      <div class="infra-impact">下游影响：${impacted.length ? `${impacted.length} 个（${impacted.map(id => id.slice(0, 8)).join('、')}）` : '无'}</div>
+    </div>`;
+  }).join('') || '<div class="empty-state">暂无在线或历史 Session 节点</div>';
+  const warningHtml = (snapshot.warnings || []).map(item => `<div class="infra-warning">${esc(item)}</div>`).join('');
+  const html = `<div class="infra-center">
+    ${warningHtml}
+    <section class="infra-section"><div class="section-heading"><div><h3>拓扑与影响范围</h3><p>Pivot 树来自 Teamserver；失联节点会同步标出其下游影响。</p></div><button class="btn small" id="infra-refresh">刷新</button></div><div class="infra-nodes">${nodeRows}</div></section>
+    <section class="infra-section"><div class="section-heading"><div><h3>活动路由</h3><p>统一查看和停止 SOCKS、端口转发、WireGuard 与 Pivot。</p></div></div>
+      <div class="infra-filters"><select id="infra-type-filter"><option value="">全部类型</option>${routeOptions}</select><select id="infra-session-filter"><option value="">全部 Session</option>${sessionOptions}</select><select id="infra-status-filter"><option value="">全部状态</option><option value="online">在线</option><option value="offline">离线</option></select><select id="infra-source-filter"><option value="">全部来源</option><option value="teamserver">Teamserver</option><option value="client">客户端本地</option></select></div>
+      <div class="table-wrap"><table class="data-table infra-table"><thead><tr><th>类型</th><th>Session</th><th>监听</th><th>目标</th><th>状态</th><th>来源</th><th></th></tr></thead><tbody id="infra-routes"></tbody></table></div>
+    </section>
+    <section class="infra-section"><div class="section-heading"><div><h3>新建路由</h3><p>提交前检查端口和地址；目标可达性仍取决于植入体所在网络。</p></div></div>
+      <div class="infra-create"><label>Session<select id="infra-create-session" ${sessionOptions ? '' : 'disabled'}>${sessionOptions || '<option>无在线 Session</option>'}</select></label><label>类型<select id="infra-create-type">${routeOptions}</select></label><label>监听地址<input id="infra-create-listen" value="127.0.0.1:1080"/></label><label id="infra-target-field">目标地址<input id="infra-create-target" placeholder="host:port"/></label></div>
+      <div id="infra-preflight" class="infra-preflight">等待预检</div><div class="infra-actions"><button class="btn accent" id="infra-create-btn" disabled>创建路由</button></div>
+    </section>
+  </div>`;
+  openViewPanel('_infrastructure', '网络基础设施', html);
+
+  const filters = ['infra-type-filter','infra-session-filter','infra-status-filter','infra-source-filter'];
+  const drawRoutes = () => {
+    const selected = Object.fromEntries(filters.map(id => [id, document.getElementById(id)?.value || '']));
+    const visible = routes.filter(route =>
+      (!selected['infra-type-filter'] || route.type === selected['infra-type-filter']) &&
+      (!selected['infra-session-filter'] || route.sessionId === selected['infra-session-filter']) &&
+      (!selected['infra-status-filter'] || route.status === selected['infra-status-filter']) &&
+      (!selected['infra-source-filter'] || route.source === selected['infra-source-filter']));
+    const tbody = document.getElementById('infra-routes');
+    if (!tbody) return;
+    tbody.innerHTML = visible.map((route, index) => `<tr><td>${esc(INFRA_ROUTE_LABELS[route.type] || route.type)}</td><td>${esc(route.session || route.sessionId.slice(0, 8))}</td><td><code>${esc(route.listen || '-')}</code></td><td><code>${esc(route.target || '-')}</code></td><td><span class="state ${esc(route.status)}">${route.status === 'online' ? '在线' : '离线'}</span></td><td>${route.source === 'teamserver' ? 'Teamserver' : '客户端'}</td><td><button class="btn small danger infra-stop" data-index="${routes.indexOf(route)}">停止</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty-state">没有符合条件的活动路由</td></tr>';
+    tbody.querySelectorAll('.infra-stop').forEach(button => button.addEventListener('click', () => stopInfrastructureRoute(routes[Number(button.dataset.index)], nodes)));
+  };
+  filters.forEach(id => document.getElementById(id)?.addEventListener('change', drawRoutes));
+  drawRoutes();
+  document.getElementById('infra-refresh')?.addEventListener('click', openInfrastructurePanel);
+
+  const type = document.getElementById('infra-create-type'), listen = document.getElementById('infra-create-listen'), target = document.getElementById('infra-create-target');
+  let preflightSeq = 0;
+  const configureForm = () => {
+    const specs = {
+      socks: ['127.0.0.1:1080', false], forward: ['127.0.0.1:8080', true], 'reverse-forward': ['0.0.0.0:8080', true],
+      'wireguard-forward': ['127.0.0.1:8080', true], 'wireguard-socks': ['127.0.0.1:1080', false],
+      'pivot-tcp': ['0.0.0.0:9898', false], 'pivot-pipe': ['\\\\.\\pipe\\sliver-pivot', false],
+    };
+    const spec = specs[type.value];
+    listen.value = spec[0];
+    document.getElementById('infra-target-field').classList.toggle('hidden', !spec[1]);
+    runPreflight();
+  };
+  const runPreflight = async () => {
+    const seq = ++preflightSeq, resultEl = document.getElementById('infra-preflight'), createButton = document.getElementById('infra-create-btn');
+    createButton.disabled = true; resultEl.textContent = '正在预检...'; resultEl.className = 'infra-preflight pending';
+    try {
+      const result = await App().PreflightNetworkRoute(type.value, listen.value, target.value);
+      if (seq !== preflightSeq) return;
+      const errors = result.errors || [], warnings = result.warnings || [];
+      resultEl.innerHTML = [...errors.map(value => `<span class="err">${esc(value)}</span>`), ...warnings.map(value => `<span class="warn">${esc(value)}</span>`), ...(errors.length || warnings.length ? [] : ['<span class="ok">预检通过，可以创建</span>'])].join('');
+      resultEl.className = `infra-preflight ${result.valid ? 'ok' : 'err'}`;
+      createButton.disabled = !result.valid || !document.getElementById('infra-create-session').value;
+    } catch (error) { resultEl.innerHTML = rpcErrorHtml(error, '路由预检失败'); resultEl.className = 'infra-preflight err'; }
+  };
+  type.addEventListener('change', configureForm); listen.addEventListener('input', runPreflight); target.addEventListener('input', runPreflight);
+  document.getElementById('infra-create-session')?.addEventListener('change', runPreflight);
+  document.getElementById('infra-create-btn')?.addEventListener('click', createInfrastructureRoute);
+  runPreflight();
+}
+
+async function createInfrastructureRoute() {
+  const sessionID = document.getElementById('infra-create-session').value;
+  const kind = document.getElementById('infra-create-type').value;
+  const listen = document.getElementById('infra-create-listen').value;
+  const target = document.getElementById('infra-create-target').value;
+  const local = endpointParts(listen), remote = endpointParts(target);
+  const calls = {
+    socks: () => App().StartSocksProxy(sessionID, local.port),
+    forward: () => App().AddPortForward(sessionID, local.port, remote.host, remote.port),
+    'reverse-forward': () => App().StartRportFwd(sessionID, local.host, local.port, remote.host, remote.port),
+    'wireguard-forward': () => App().WGStartPortForward(sessionID, local.port, target),
+    'wireguard-socks': () => App().WGStartSocks(sessionID, local.port),
+    'pivot-tcp': () => App().StartPivotListener(sessionID, 'tcp', listen),
+    'pivot-pipe': () => App().StartPivotListener(sessionID, 'pipe', listen),
+  };
+  const button = document.getElementById('infra-create-btn'); button.disabled = true;
+  try { await calls[kind](); toast('ok', `${INFRA_ROUTE_LABELS[kind]}已创建`); await openInfrastructurePanel(); }
+  catch (error) { toastRpcError(error, '创建路由失败'); button.disabled = false; }
+}
+
+async function stopInfrastructureRoute(route, nodes) {
+  const node = nodes.find(item => item.id === route.sessionId), impacted = node?.downstream?.length || 0;
+  const calls = {
+    socks: () => App().StopSocksProxy(route.sessionId),
+    forward: () => App().RemovePortForward(route.sessionId, Number(route.id)),
+    'reverse-forward': () => App().StopRportFwd(route.sessionId, Number(route.id)),
+    'wireguard-forward': () => App().WGStopPortForward(route.sessionId, Number(route.id)),
+    'wireguard-socks': () => App().WGStopSocks(route.sessionId, Number(route.id)),
+    'pivot-tcp': () => App().StopPivotListener(route.sessionId, Number(route.id)),
+    'pivot-pipe': () => App().StopPivotListener(route.sessionId, Number(route.id)),
+    'pivot-namedpipe': () => App().StopPivotListener(route.sessionId, Number(route.id)),
+  };
+  await runDangerousAction({
+    title: '停止网络路由', okLabel: '停止',
+    message: `确定停止 ${esc(INFRA_ROUTE_LABELS[route.type] || route.type)}（${esc(route.listen || route.id)}）吗？所属节点 ${esc(route.session || route.sessionId.slice(0,8))}${impacted ? ` 关联 ${impacted} 个下游节点，请确认影响范围。` : ' 无下游节点。'}`,
+    action: calls[route.type], success: '网络路由已停止', refresh: openInfrastructurePanel,
+  });
+}
 
 const taskStatusMeta = {
   queued: { label: '排队中', cls: 'queued' },
@@ -2649,6 +2845,30 @@ const SERVER_HELP = `Server console — runs teamserver commands (NOT on a targe
   wg [port] [nport] [key]  start a WireGuard listener
   clear                    clear this console`;
 
+const SERVER_COMMAND_SCHEMA = {
+  commands: [
+    'help','clear','version','sessions','beacons','jobs','listeners','operators','players','loot','hosts','creds',
+    'builds','regenerate','profiles','websites','website','canaries','stager','use','c2profiles','c2profile',
+    'certificates','certs','ca','compiler','compiler-info','builders','traffic-encoders','shellcode-encoders',
+    'armory','restart-jobs','monitor','pivots','pivot-graph','wg-client-config','wg-unique-ip','dll2shellcode',
+    'srdi','shellcode-encode','rename','kill-session','rm-session','kill-beacon','rm-beacon','mtls','http','https',
+    'dns','wg','wireguard',
+  ],
+  arguments: {
+    jobs: { 0: ['kill'] }, loot: { 0: ['rm','rename'] }, hosts: { 0: ['rm','ioc-rm'] },
+    creds: { 0: ['add','rm','update','sniff','get'] }, websites: { 0: ['rm'] },
+    website: { 0: ['add','update','rm'] }, c2profile: { 0: ['edit','new'] },
+    armory: { 0: ['install','remove'] }, monitor: { 0: ['start','stop','list','add','del'] },
+  },
+};
+
+function serverDynamicCompletions({ command, token }) {
+  if (token.index !== 1) return [];
+  if (['use','kill-session','rm-session','rename'].includes(command)) return allSessions.map(item => item.id);
+  if (['use','kill-beacon','rm-beacon'].includes(command)) return allBeacons.map(item => item.id);
+  return [];
+}
+
 function pinServerConsole() {
   const id = '_server_dock';
   if (openTabs[id]) { activateTab(id); return; }
@@ -2664,6 +2884,7 @@ function pinServerConsole() {
   document.getElementById('interact-panels').appendChild(panel);
   const inp = document.getElementById('sc-inp');
   const hist = []; let hi = -1;
+  attachCommandCompletion(inp, SERVER_COMMAND_SCHEMA, serverDynamicCompletions);
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter') { const v = inp.value.trim(); inp.value = ''; hi = -1; if (v) { hist.unshift(v); runServerCmd(v); } }
     if (e.key === 'ArrowUp') { if (hi < hist.length-1) { hi++; inp.value = hist[hi]; } e.preventDefault(); }
