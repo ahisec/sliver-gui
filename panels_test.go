@@ -55,6 +55,44 @@ func TestFileExecuteWindowsRequestPreservesHideWindow(t *testing.T) {
 	}
 }
 
+func TestRemoteParentAndBaseHandlesUnixWindowsAndRelativePaths(t *testing.T) {
+	tests := []struct {
+		path       string
+		wantParent string
+		wantBase   string
+	}{
+		{`/var/log/syslog`, `/var/log`, `syslog`},
+		{`C:\Windows\System32\cmd.exe`, `C:\Windows\System32`, `cmd.exe`},
+		{`C:\Temp\`, `C:\`, `Temp`},
+		{`notes.txt`, `.`, `notes.txt`},
+	}
+	for _, tt := range tests {
+		parent, base := remoteParentAndBase(tt.path)
+		if parent != tt.wantParent || base != tt.wantBase {
+			t.Fatalf("remoteParentAndBase(%q) = (%q, %q), want (%q, %q)", tt.path, parent, base, tt.wantParent, tt.wantBase)
+		}
+	}
+}
+
+func TestFilePropertiesViewPreservesReadOnlyMetadata(t *testing.T) {
+	entry := FileEntry{Name: "report.txt", IsDir: false, Size: 42, Mode: "-rw-r--r--", ModTime: 1710000000}
+	got := filePropertiesView("/tmp/report.txt", entry)
+	if got.Path != "/tmp/report.txt" || got.Name != entry.Name || got.Type != "文件" || got.IsDir {
+		t.Fatalf("file identity was not preserved: %#v", got)
+	}
+	if got.Size != entry.Size || got.Mode != entry.Mode || got.ModTime != entry.ModTime {
+		t.Fatalf("file metadata was not preserved: %#v", got)
+	}
+	if got.CreatedAt != 0 || got.AccessedAt != 0 || got.Owner != "" {
+		t.Fatalf("unsupported fields should remain empty for UI fallback: %#v", got)
+	}
+
+	dir := filePropertiesView("/tmp/logs", FileEntry{Name: "logs", IsDir: true})
+	if dir.Type != "文件夹" || !dir.IsDir {
+		t.Fatalf("directory type was not preserved: %#v", dir)
+	}
+}
+
 func TestFullProcessListRequestRequestsMetadata(t *testing.T) {
 	request := fullProcessListRequest("session-test")
 	if !request.FullInfo {

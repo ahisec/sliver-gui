@@ -4370,6 +4370,31 @@ async function openFileBrowser(sessionID) {
     return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false });
   }
 
+  function propertyValue(value, fallback = '不可用') {
+    if (value === undefined || value === null || value === '') return fallback;
+    return String(value);
+  }
+
+  function filePropertiesSummary(props, hashResult) {
+    const rows = [
+      ['路径', props.path || ''],
+      ['类型', props.type || (props.isDir ? '文件夹' : '文件')],
+      ['大小', props.isDir ? '—' : fmtSize(Number(props.size || 0))],
+      ['修改时间', formatModTime(props.modTime)],
+      ['创建时间', formatModTime(props.createdAt)],
+      ['访问时间', formatModTime(props.accessedAt)],
+      ['权限/模式', propertyValue(props.mode)],
+      ['所有者', propertyValue(props.owner)],
+    ];
+    if (hashResult?.hash) rows.push([hashResult.algorithm || 'SHA-256', hashResult.hash]);
+    return rows.map(([label, value]) => `${label}: ${value}`).join('\n');
+  }
+
+  async function copyFilePropertyText(text, label = '内容') {
+    try { await navigator.clipboard.writeText(text || ''); toast('ok', `${label}已复制到剪贴板`); }
+    catch (error) { toastRpcError(error, '复制失败'); }
+  }
+
   const history = [];
   let histIdx = -1;
   let currentPath = '.';
@@ -4511,12 +4536,95 @@ async function openFileBrowser(sessionID) {
     argsInput.focus();
   }
 
+  async function showFilePropertiesDialog(file) {
+    if (!file) return;
+    const ov = document.createElement('div');
+    ov.className = 'ui-dialog-overlay';
+    ov.innerHTML = `<div class="ui-dialog file-properties-dialog">
+      <div class="ui-dialog-title">属性</div>
+      <div class="file-props-loading"><span class="spinner"></span>正在读取属性...</div>
+    </div>`;
+    document.body.appendChild(ov);
+    let closed = false;
+    let props = null;
+    let hashResult = null;
+    const close = () => { closed = true; ov.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = event => { if (event.key === 'Escape') close(); };
+    ov.addEventListener('click', event => { if (event.target === ov) close(); });
+    document.addEventListener('keydown', onKey);
+
+    const draw = (state = 'ready', message = '') => {
+      if (closed) return;
+      const hashRow = file.isDir
+        ? '<div><dt>SHA-256</dt><dd>目录不支持哈希核验</dd></div>'
+        : `<div><dt>SHA-256</dt><dd class="file-props-hash">${hashResult?.hash ? `<code>${esc(hashResult.hash)}</code><button class="btn small" data-props-copy-hash>复制</button>` : '未计算'}</dd></div>`;
+      ov.innerHTML = `<div class="ui-dialog file-properties-dialog">
+        <div class="ui-dialog-title">属性</div>
+        <div class="file-props-head"><strong>${esc(file.name)}</strong><span>${esc(props?.type || (file.isDir ? '文件夹' : fileTypeLabel(file.name, false)))}</span></div>
+        ${message ? `<div class="task-note ${state === 'error' ? 'error-msg' : ''}">${esc(message)}</div>` : ''}
+        <dl class="file-props-grid">
+          <div><dt>完整路径</dt><dd><code>${esc(props?.path || file.path)}</code></dd></div>
+          <div><dt>类型</dt><dd>${esc(props?.type || (file.isDir ? '文件夹' : '文件'))}</dd></div>
+          <div><dt>大小</dt><dd>${props?.isDir ? '—' : fmtSize(Number(props?.size || file.size || 0))}</dd></div>
+          <div><dt>修改时间</dt><dd>${formatModTime(props?.modTime || file.modTime)}</dd></div>
+          <div><dt>创建时间</dt><dd>${formatModTime(props?.createdAt)}</dd></div>
+          <div><dt>访问时间</dt><dd>${formatModTime(props?.accessedAt)}</dd></div>
+          <div><dt>权限/模式</dt><dd>${esc(propertyValue(props?.mode || file.mode))}</dd></div>
+          <div><dt>所有者</dt><dd>${esc(propertyValue(props?.owner))}</dd></div>
+          ${hashRow}
+        </dl>
+        <div class="task-note">属性来自 Sliver 已公开的文件列表和下载 RPC；目标或 Teamserver 未返回的字段显示为不可用。</div>
+        <div class="ui-dialog-actions">
+          <button type="button" class="btn small" data-props-copy-path>复制路径</button>
+          <button type="button" class="btn small" data-props-copy-summary>复制摘要</button>
+          ${file.isDir ? '' : `<button type="button" class="btn small" data-props-hash ${state === 'hashing' ? 'disabled' : ''}>${state === 'hashing' ? '正在计算...' : '计算哈希'}</button>`}
+          <button type="button" class="btn small" data-props-refresh ${state === 'loading' ? 'disabled' : ''}>刷新</button>
+          <button type="button" class="btn small accent" data-dialog-close>关闭</button>
+        </div>
+      </div>`;
+      ov.querySelector('[data-dialog-close]')?.addEventListener('click', close);
+      ov.querySelector('[data-props-copy-path]')?.addEventListener('click', () => copyFilePropertyText(props?.path || file.path, '路径'));
+      ov.querySelector('[data-props-copy-summary]')?.addEventListener('click', () => copyFilePropertyText(filePropertiesSummary(props || file, hashResult), '属性摘要'));
+      ov.querySelector('[data-props-copy-hash]')?.addEventListener('click', () => copyFilePropertyText(hashResult?.hash || '', '哈希'));
+      ov.querySelector('[data-props-refresh]')?.addEventListener('click', loadProperties);
+      ov.querySelector('[data-props-hash]')?.addEventListener('click', calculateHash);
+    };
+
+    async function loadProperties() {
+      draw('loading', '正在刷新属性...');
+      const result = await App().FileBrowserProperties(sessionID, file.path).catch(error => ({ error }));
+      if (result?.error) {
+        const info = rpcError(result.error, '读取属性失败');
+        props = { ...file, type: file.isDir ? '文件夹' : '文件' };
+        draw('error', info.detail ? `${info.message}：${info.detail}` : info.message);
+        return;
+      }
+      props = result;
+      draw('ready');
+    }
+
+    async function calculateHash() {
+      if (file.isDir) return;
+      draw('hashing', '正在下载文件并计算 SHA-256...');
+      const result = await App().FileBrowserHash(sessionID, file.path).catch(error => ({ error }));
+      if (result?.error) {
+        const info = rpcError(result.error, '计算哈希失败');
+        draw('error', info.detail ? `${info.message}：${info.detail}` : info.message);
+        return;
+      }
+      hashResult = result;
+      draw('ready', `已计算 ${esc(result.algorithm || 'SHA-256')}，读取 ${fmtSize(Number(result.bytes || 0))}`);
+    }
+
+    await loadProperties();
+  }
+
   function showFileContextMenu(event, file) {
     event.preventDefault();
     event.stopPropagation();
     const item = (action, label, danger = false) => `<button class="ctx-item${danger ? ' danger' : ''}" data-fb-action="${action}">${label}</button>`;
     ctxMenu.innerHTML = file
-      ? `<div class="ctx-agent"><strong>${esc(file.name)}</strong><span>${file.isDir ? '文件夹' : fileTypeLabel(file.name, false)}</span></div>${file.isDir ? '' : item('execute', '运行程序')}${item('download', file.isDir ? '下载文件夹 (.tar.gz)' : '下载')}${item('upload', '上传到当前目录')}<div class="ctx-divider"></div>${item('delete', '删除', true)}`
+      ? `<div class="ctx-agent"><strong>${esc(file.name)}</strong><span>${file.isDir ? '文件夹' : fileTypeLabel(file.name, false)}</span></div>${item('properties', '属性')}${file.isDir ? '' : item('execute', '运行程序')}${item('download', file.isDir ? '下载文件夹 (.tar.gz)' : '下载')}${item('upload', '上传到当前目录')}<div class="ctx-divider"></div>${item('delete', '删除', true)}`
       : `<div class="ctx-agent"><strong>${esc(currentPath)}</strong><span>当前目录</span></div>${item('upload', '上传文件')}`;
     ctxMenu.style.left = Math.max(8, Math.min(event.clientX, window.innerWidth - 230)) + 'px';
     ctxMenu.style.top = Math.max(8, Math.min(event.clientY, window.innerHeight - 180)) + 'px';
@@ -4527,6 +4635,7 @@ async function openFileBrowser(sessionID) {
       const action = button.dataset.fbAction;
       if (action === 'upload') return uploadToCurrentDirectory();
       if (!file) return;
+      if (action === 'properties') return showFilePropertiesDialog(file);
       if (action === 'execute' && !file.isDir) return showFileExecuteDialog(file);
       if (action === 'download') {
         const result = await runFileTransfer('download', sessionID, file.path);
@@ -4639,7 +4748,7 @@ async function openFileBrowser(sessionID) {
         if (selectedItem) selectedItem.classList.remove('selected');
         item.classList.add('selected');
         selectedItem = item;
-        showFileContextMenu(event, { name: item.dataset.name, isDir: item.dataset.dir === 'true', path: item.dataset.path });
+        showFileContextMenu(event, { name: item.dataset.name, isDir: item.dataset.dir === 'true', path: item.dataset.path, size: Number(item.dataset.size || 0), mode: item.dataset.mode || '', modTime: Number(item.dataset.modTime || 0) });
       });
     });
   }

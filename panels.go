@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"regexp"
@@ -31,6 +33,28 @@ type FileBrowserResult struct {
 	Path  string      `json:"path"`
 	Files []FileEntry `json:"files"`
 	Error string      `json:"error,omitempty"`
+}
+
+type FilePropertiesResult struct {
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	IsDir      bool   `json:"isDir"`
+	Size       int64  `json:"size"`
+	Mode       string `json:"mode"`
+	ModTime    int64  `json:"modTime"`
+	CreatedAt  int64  `json:"createdAt"`
+	AccessedAt int64  `json:"accessedAt"`
+	Owner      string `json:"owner"`
+	Error      string `json:"error,omitempty"`
+}
+
+type FileHashResult struct {
+	Path      string `json:"path"`
+	Algorithm string `json:"algorithm"`
+	Hash      string `json:"hash"`
+	Bytes     int64  `json:"bytes"`
+	Error     string `json:"error,omitempty"`
 }
 
 type FileSystemMount struct {
@@ -124,6 +148,104 @@ func (a *App) FileBrowserList(sessionID, path string) FileBrowserResult {
 		})
 	}
 	return FileBrowserResult{Path: resp.Path, Files: files}
+}
+
+func remoteParentAndBase(path string) (string, string) {
+	p := strings.TrimSpace(path)
+	if p == "" || p == "." {
+		return ".", "."
+	}
+	for len(p) > 1 && strings.HasSuffix(p, "/") && p != "/" {
+		p = strings.TrimSuffix(p, "/")
+	}
+	for len(p) > 3 && strings.HasSuffix(p, `\`) {
+		p = strings.TrimSuffix(p, `\`)
+	}
+	idx := strings.LastIndexAny(p, `/\`)
+	if idx < 0 {
+		return ".", p
+	}
+	if idx == 0 {
+		return p[:1], p[1:]
+	}
+	if idx == 2 && len(p) >= 2 && p[1] == ':' {
+		return p[:3], p[idx+1:]
+	}
+	return p[:idx], p[idx+1:]
+}
+
+func filePropertiesView(path string, entry FileEntry) FilePropertiesResult {
+	itemType := "文件"
+	if entry.IsDir {
+		itemType = "文件夹"
+	}
+	return FilePropertiesResult{
+		Path:    path,
+		Name:    entry.Name,
+		Type:    itemType,
+		IsDir:   entry.IsDir,
+		Size:    entry.Size,
+		Mode:    entry.Mode,
+		ModTime: entry.ModTime,
+	}
+}
+
+// FileBrowserProperties returns read-only metadata already exposed by Sliver's
+// structured directory listing RPC. Fields not returned by the implant are left
+// empty so the UI can present them as unavailable instead of guessing.
+func (a *App) FileBrowserProperties(sessionID, path string) FilePropertiesResult {
+	if strings.TrimSpace(path) == "" {
+		return FilePropertiesResult{Error: "path is required"}
+	}
+	parent, base := remoteParentAndBase(path)
+	listing := a.FileBrowserList(sessionID, parent)
+	if listing.Error != "" {
+		return FilePropertiesResult{Error: listing.Error}
+	}
+	for _, entry := range listing.Files {
+		if entry.Name == base {
+			a.audit.log("file-properties", sessionID, path)
+			return filePropertiesView(path, entry)
+		}
+	}
+	return FilePropertiesResult{Error: fmt.Sprintf("%s not found in %s", base, parent)}
+}
+
+// FileBrowserHash downloads a single remote file through Sliver's Download RPC
+// and calculates SHA-256 locally. Directories are intentionally rejected to
+// avoid implicit recursive reads from a properties dialog.
+func (a *App) FileBrowserHash(sessionID, path string) FileHashResult {
+	client, err := a.requireClient()
+	if err != nil {
+		return FileHashResult{Error: err.Error()}
+	}
+	if strings.TrimSpace(path) == "" {
+		return FileHashResult{Error: "path is required"}
+	}
+	a.audit.log("file-hash", sessionID, path)
+	resp, err := client.RPC.Download(a.ctx, &sliverpb.DownloadReq{
+		Path:             path,
+		RestrictedToFile: true,
+		Request:          &commonpb.Request{SessionID: sessionID},
+	})
+	if err != nil {
+		return FileHashResult{Error: err.Error()}
+	}
+	if resp == nil {
+		return FileHashResult{Error: "teamserver returned an empty download response"}
+	}
+	if resp.Response != nil && resp.Response.Err != "" {
+		return FileHashResult{Error: resp.Response.Err}
+	}
+	if resp.IsDir {
+		return FileHashResult{Error: "directories cannot be hashed from the properties dialog"}
+	}
+	data, err := decodeDownload(resp)
+	if err != nil {
+		return FileHashResult{Error: "decode: " + err.Error()}
+	}
+	sum := sha256.Sum256(data)
+	return FileHashResult{Path: path, Algorithm: "SHA-256", Hash: hex.EncodeToString(sum[:]), Bytes: int64(len(data))}
 }
 
 // FileBrowserDelete removes a file/directory.
