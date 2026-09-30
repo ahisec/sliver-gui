@@ -58,15 +58,19 @@ test('hides unknown backend details in task-safe summaries', () => {
 
 test('translates Armory download and compatibility failures', () => {
   assert.equal(
-    rpcErrorMessage('no compatible asset found for windows/amd64 in package release v1'),
-    'Armory 包没有适用于当前系统和架构的构建产物',
+    rpcErrorMessage('download package: asset not found HTTP 404'),
+    'Armory 包的最新版本缺少官方压缩包',
   );
   assert.equal(
-    rpcErrorMessage('GitHub API returned HTTP 403 for package'),
-    'Armory 服务请求失败，请稍后重试或检查 GitHub 访问状态',
+    rpcErrorMessage('fetch armory index: GitHub rate limit HTTP 403'),
+    'GitHub 匿名请求已被限流，请稍后重试',
   );
   assert.equal(
-    rpcErrorMessage('download asset: context deadline exceeded'),
-    'Armory 网络请求超时，请检查 GitHub 连接后重试',
+    rpcErrorMessage('download package: context deadline exceeded'),
+    'Armory 网络请求超时或被中断，请检查 GitHub 连接后重试',
+  );
+  assert.equal(
+    rpcErrorMessage('package manifest mismatch: expected extension.json'),
+    'Armory 包清单与官方索引类型不一致，已停止安装',
   );
 });

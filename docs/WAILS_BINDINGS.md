@@ -12,9 +12,9 @@
 | `AddPortForward` | Sliver RPC/客户端封装 | `app.go:2617` | `(sessionID string, localPort int, remoteHost string, remotePort int) error` |
 | `AddWebsiteContent` | Sliver RPC/客户端封装 | `features.go:627` | `(website, webPath, localFile string) error` |
 | `AppVersion` | 客户端本地辅助 | `version.go:67` | `() BuildInfo` |
-| `ArmoryInstall` | 外部内容/本地安装 | `armory.go:133` | `(packageName string) error` |
+| `ArmoryInstall` | 外部内容/本地安装 | `armory.go:106` | `(packageName string) error` |
 | `ArmoryList` | 外部内容/本地安装 | `armory.go:76` | `() ([]ArmoryPackage, error)` |
-| `ArmoryRemove` | 外部内容/本地安装 | `armory.go:218` | `(packageName string) error` |
+| `ArmoryRemove` | 外部内容/本地安装 | `armory.go:138` | `(packageName string) error` |
 | `AuditLogPath` | 客户端本地辅助 | `audit.go:89` | `() string` |
 | `Backdoor` | Sliver RPC/客户端封装 | `app.go:1641` | `(sessionID, remoteFilePath, profileName string) error` |
 | `BuildActionReport` | Sliver RPC/客户端封装 | `team_center.go:257` | `(request ActionReportRequest) ActionReportPreview` |
@@ -101,9 +101,9 @@
 | `ListFiles` | Sliver RPC/客户端封装 | `app.go:739` | `(sessionID, path string) LsResult` |
 | `ListHTTPC2Profiles` | Sliver RPC/客户端封装 | `features.go:383` | `() ([]HTTPC2View, error)` |
 | `ListHosts` | Sliver RPC/客户端封装 | `app.go:1485` | `() ([]HostView, error)` |
-| `ListImplantExtensions` | Sliver RPC/客户端封装 | `extensions.go:180` | `(sessionID string) ([]string, error)` |
+| `ListImplantExtensions` | Sliver RPC/客户端封装 | `extensions.go:212` | `(sessionID string) ([]string, error)` |
 | `ListImplantProfiles` | Sliver RPC/客户端封装 | `app.go:3077` | `() ([]ProfileView, error)` |
-| `ListInstalledExtensions` | Sliver RPC/客户端封装 | `extensions.go:134` | `() ([]ExtCommandView, error)` |
+| `ListInstalledExtensions` | Sliver RPC/客户端封装 | `extensions.go:166` | `() ([]ExtCommandView, error)` |
 | `ListJobs` | Sliver RPC/客户端封装 | `app.go:2006` | `() ([]JobView, error)` |
 | `ListMonitorConfig` | Sliver RPC/客户端封装 | `features.go:508` | `() ([]MonitorProviderView, error)` |
 | `ListMounts` | Sliver RPC/客户端封装 | `features.go:82` | `(sessionID string) ([]MountView, error)` |
@@ -172,7 +172,7 @@
 | `RevToSelf` | Sliver RPC/客户端封装 | `app.go:2784` | `(sessionID string) error` |
 | `RunAs` | Sliver RPC/客户端封装 | `app.go:1149` | `(sessionID, username, domain, password, program, args string) (string, error)` |
 | `RunExecute` | Sliver RPC/客户端封装 | `app.go:393` | `(sessionID, path string, args []string) ExecResult` |
-| `RunExtension` | Sliver RPC/客户端封装 | `extensions.go:296` | `(sessionID, command string, args []string) (string, error)` |
+| `RunExtension` | Sliver RPC/客户端封装 | `extensions.go:328` | `(sessionID, command string, args []string) (string, error)` |
 | `SSHExec` | Sliver RPC/客户端封装 | `features.go:170` | `(sessionID, host string, port int, user, pass, command string) SSHResult` |
 | `SaveHTTPC2Profile` | Sliver RPC/客户端封装 | `features.go:607` | `(profileJSON string, overwrite bool) error` |
 | `SaveImplantProfile` | Sliver RPC/客户端封装 | `app.go:3126` | `(req GenerateRequest) error` |

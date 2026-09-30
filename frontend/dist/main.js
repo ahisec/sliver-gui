@@ -2535,7 +2535,7 @@ async function renderArmory(content) {
     catch (error) { content.innerHTML = rpcErrorHtml(error, '加载 Armory 失败'); return; }
   }
   const packages = extensionCenterState.armory || [];
-  content.innerHTML = `<div class="section-heading"><div><h3>Armory 软件包</h3><p>来源为 sliverarmory GitHub 组织；当前完整性状态为“签名未验证”。</p></div><button class="btn small" id="armory-refresh">刷新索引</button></div><div class="ext-list">${packages.map(pkg => `<article class="ext-item"><div class="ext-item-main"><strong>${esc(pkg.name)}</strong><span class="tag">${pkg.type === 'alias' ? 'Alias' : 'Extension'}</span><span>${pkg.installed ? '已安装' : '可安装'}</span></div><p>${esc(pkg.description || '无说明')}</p><div class="ext-meta"><span>版本：${esc(pkg.version || '索引未提供')}</span><span>来源：${esc(pkg.url || 'sliverarmory')}</span><span>完整性：签名未验证</span><span>兼容性：安装时按本机平台选择资产</span></div><div class="ext-actions"><button class="btn small armory-install" data-name="${esc(pkg.name)}">${pkg.installed ? '更新 / 重装' : '安装'}</button>${pkg.installed ? `<button class="btn small danger armory-remove" data-name="${esc(pkg.name)}">卸载</button>` : ''}</div></article>`).join('') || '<div class="empty-state">Armory 索引中暂无软件包</div>'}</div>`;
+  content.innerHTML = `<div class="section-heading"><div><h3>Armory 软件包</h3><p>来源为 Sliver 官方 Armory 索引；当前完整性状态为“签名未验证”。</p></div><button class="btn small" id="armory-refresh">刷新索引</button></div><div class="ext-list">${packages.map(pkg => `<article class="ext-item"><div class="ext-item-main"><strong>${esc(pkg.name)}</strong><code>${esc(pkg.commandName)}</code><span class="tag">${pkg.type === 'alias' ? 'Alias' : 'Extension'}</span><span>${pkg.installed ? '已安装' : '可安装'}</span></div><p>${esc(pkg.description || '无说明')}</p><div class="ext-meta"><span>版本：${esc(pkg.version || '索引未提供')}</span><span>来源：${esc(pkg.url || 'sliverarmory')}</span><span>完整性：签名未验证</span><span>包类型：由官方索引确定</span></div><div class="ext-actions"><button class="btn small armory-install" data-name="${esc(pkg.commandName)}">${pkg.installed ? '更新 / 重装' : '安装'}</button>${pkg.installed ? `<button class="btn small danger armory-remove" data-name="${esc(pkg.commandName)}">卸载</button>` : ''}</div></article>`).join('') || '<div class="empty-state">Armory 索引中暂无软件包</div>'}</div>`;
   document.getElementById('armory-refresh')?.addEventListener('click', () => { extensionCenterState.armory = null; renderArmory(content); });
   content.querySelectorAll('.armory-install').forEach(button => button.addEventListener('click', async () => { await installArmoryPackage(button.dataset.name); extensionCenterState.armory = null; await openExtensionCenter('armory'); }));
   content.querySelectorAll('.armory-remove').forEach(button => button.addEventListener('click', () => runDangerousAction({ title:'卸载扩展', message:`确定卸载“${esc(button.dataset.name)}”吗？`, okLabel:'卸载', action:()=>App().ArmoryRemove(button.dataset.name), success:'扩展已卸载', refresh:async()=>{ extensionCenterState.armory=null; await openExtensionCenter('armory'); } })));
@@ -3282,7 +3282,7 @@ async function installArmoryPackage(packageName) {
   const installTask = taskStore.create({
     type: 'armory-install', title: '安装 Armory 包', target: packageName,
     status: 'running', summary: '正在获取并安装软件包', timeoutMs: 120000,
-    policy: '网络请求最长等待 120 秒；失败后可重试；安装过程暂不支持取消。',
+    policy: '使用 Sliver 官方 Armory 索引；网络请求最长等待 120 秒并自动重试；安装过程暂不支持取消。',
   });
   taskActions.set(installTask.id, { retry: () => installArmoryPackage(packageName) });
   appendServer(`[*] 正在安装 ${packageName}...`, 'info');

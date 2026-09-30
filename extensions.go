@@ -57,9 +57,10 @@ type extCommand struct {
 // extManifest supports both the v2 (commands array) and v1 (single command at
 // the top level) manifest layouts.
 type extManifest struct {
-	Name     string       `json:"name"`
-	Version  string       `json:"version"`
-	Commands []extCommand `json:"commands"`
+	Name        string       `json:"name"`
+	PackageName string       `json:"package_name"`
+	Version     string       `json:"version"`
+	Commands    []extCommand `json:"commands"`
 	// v1 single-command fields:
 	CommandName string    `json:"command_name"`
 	Entrypoint  string    `json:"entrypoint"`
@@ -127,6 +128,37 @@ func loadManifest(path string) (*extManifest, error) {
 	}
 	m.rootPath = filepath.Dir(path)
 	return &m, nil
+}
+
+func installedExtensionManifestPath(name string) string {
+	dir := extensionsDir()
+	direct := filepath.Join(dir, name, "extension.json")
+	if _, err := os.Stat(direct); err == nil {
+		return direct
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return direct
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(dir, entry.Name(), "extension.json")
+		manifest, err := loadManifest(candidate)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(manifest.Name, name) || strings.EqualFold(manifest.PackageName, name) {
+			return candidate
+		}
+		for _, command := range manifest.commands() {
+			if strings.EqualFold(command.CommandName, name) {
+				return candidate
+			}
+		}
+	}
+	return direct
 }
 
 // ListInstalledExtensions scans ~/.sliver-client/extensions and returns every
@@ -388,7 +420,7 @@ func (a *App) RunExtension(sessionID, command string, args []string) (string, er
 // registerDependency registers a dependency extension (e.g. coff-loader) and
 // returns the sha256 name it was registered under plus its entrypoint.
 func (a *App) registerDependency(sessionID, depName, goos, goarch string) (string, string, error) {
-	mp := filepath.Join(extensionsDir(), depName, "extension.json")
+	mp := installedExtensionManifestPath(depName)
 	m, err := loadManifest(mp)
 	if err != nil {
 		return "", "", fmt.Errorf("dependency %q not installed (%s)", depName, mp)
