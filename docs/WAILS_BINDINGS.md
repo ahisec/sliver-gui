@@ -2,7 +2,7 @@
 
 > 由 `go run ./cmd/binding-inventory` 从 `App` 的导出方法生成。此清单描述客户端绑定，不代表每个方法都直接对应一个 Sliver RPC。
 
-共 **237** 个导出方法。分类为静态启发式结果，审查具体行为时应以源码为准。
+共 **240** 个导出方法。分类为静态启发式结果，审查具体行为时应以源码为准。
 
 | 方法 | 分类 | 源码 | 签名 |
 |---|---|---|---|
@@ -17,6 +17,7 @@
 | `ArmoryRemove` | 外部内容/本地安装 | `armory.go:218` | `(packageName string) error` |
 | `AuditLogPath` | 客户端本地辅助 | `audit.go:89` | `() string` |
 | `Backdoor` | Sliver RPC/客户端封装 | `app.go:1641` | `(sessionID, remoteFilePath, profileName string) error` |
+| `BuildActionReport` | Sliver RPC/客户端封装 | `team_center.go:257` | `(request ActionReportRequest) ActionReportPreview` |
 | `CancelBeaconTask` | Sliver RPC/客户端封装 | `features.go:632` | `(taskID string) error` |
 | `CancelTransfer` | Sliver RPC/客户端封装 | `app.go:1084` | `(transferID string) bool` |
 | `ChangeDir` | Sliver RPC/客户端封装 | `app.go:775` | `(sessionID, path string) (string, error)` |
@@ -78,6 +79,7 @@
 | `GetProcessList` | Sliver RPC/客户端封装 | `app.go:437` | `(sessionID string) ([]ProcessView, error)` |
 | `GetServerCompatibility` | 兼容性聚合 | `compatibility.go:47` | `() (ServerCompatibility, error)` |
 | `GetSystem` | Sliver RPC/客户端封装 | `app.go:2764` | `(sessionID, hostingProcess, profileName string) error` |
+| `GetTeamCenterSnapshot` | Sliver RPC/客户端封装 | `team_center.go:206` | `() TeamCenterSnapshot` |
 | `GetVersion` | Sliver RPC/客户端封装 | `app.go:254` | `() (VersionInfo, error)` |
 | `GrepFiles` | Sliver RPC/客户端封装 | `features.go:30` | `(sessionID, pattern, path string, recursive bool) (string, error)` |
 | `Ifconfig` | Sliver RPC/客户端封装 | `app.go:866` | `(sessionID string) ([]NetInterfaceView, error)` |
@@ -140,6 +142,7 @@
 | `ProcessBrowserKill` | 客户端本地辅助 | `panels.go:127` | `(sessionID string, pid int32) error` |
 | `ProcessBrowserList` | 客户端本地辅助 | `panels.go:98` | `(sessionID string) ProcessBrowserResult` |
 | `ProcessDump` | Sliver RPC/客户端封装 | `app.go:915` | `(sessionID string, pid int32) TransferResult` |
+| `QueryAuditTimeline` | Sliver RPC/客户端封装 | `team_center.go:173` | `(filter AuditFilter) ([]AuditTimelineEntry, error)` |
 | `ReadRemoteFile` | Sliver RPC/客户端封装 | `app.go:835` | `(sessionID, path string) (string, error)` |
 | `RecentAudit` | 客户端本地辅助 | `audit.go:95` | `(limit int) ([]auditEntry, error)` |
 | `ReconfigureBeacon` | Sliver RPC/客户端封装 | `app.go:1419` | `(beaconID string, interval, jitter int64) error` |

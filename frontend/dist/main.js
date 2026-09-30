@@ -20,6 +20,32 @@ const taskStore = TaskStore.createTaskStore({ limit: 100 });
 let taskCenterFilter = 'all';
 const taskActions = new Map();
 const beaconPolls = new Map();
+const NOTIFICATION_SETTINGS_KEY = 'sliver-gui:notifications';
+const defaultNotificationSettings = {
+  enabled: true, desktop: false, minimumLevel: 'info', quietStart: '', quietEnd: '',
+  categories: { agent: true, task: true, listener: true },
+};
+let notificationSettings = loadNotificationSettings();
+let listenerSnapshot = null;
+const taskNotificationStates = new Map();
+
+function loadNotificationSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(NOTIFICATION_SETTINGS_KEY) || '{}');
+    return { ...defaultNotificationSettings, ...saved, categories: { ...defaultNotificationSettings.categories, ...(saved.categories || {}) } };
+  } catch (error) { return { ...defaultNotificationSettings, categories: { ...defaultNotificationSettings.categories } }; }
+}
+function saveNotificationSettings() {
+  try { localStorage.setItem(NOTIFICATION_SETTINGS_KEY, JSON.stringify(notificationSettings)); } catch (error) {}
+}
+function notifyOperational(event) {
+  if (!NotificationRules.shouldNotify(event, notificationSettings)) return;
+  const toastType = event.level === 'critical' ? 'err' : event.level === 'warning' ? 'info' : 'ok';
+  toast(toastType, event.message, event.level === 'critical' ? 6000 : 3500);
+  if (notificationSettings.desktop && 'Notification' in window && Notification.permission === 'granted') {
+    new Notification(event.title || 'Sliver GUI', { body: event.message, tag: event.tag || event.category });
+  }
+}
 
 // ── Persistence ─────────────────────────────────────────────────────────────
 // Operator notes, measured integrity, and graph layout survive disconnects and
@@ -295,6 +321,7 @@ document.getElementById('disconnect-btn').addEventListener('click', async () => 
   pivotTree = [];
   activeInteractId = null;
   allSessions = []; allBeacons = [];
+  listenerSnapshot = null;
   selectedConfigPath = null; cancelReconnect();
 });
 
@@ -307,8 +334,8 @@ function wireEventStream() {
     logEvent(ev);
     if (ev.type && ev.type.includes('session')) refreshAgents();
     if (ev.type && ev.type.includes('beacon')) refreshAgents();
-    if (ev.type === 'session-connected' || ev.type === 'session-opened') toast('ok', `新会话：${ev.session?.hostname||''}`);
-    if (ev.type === 'beacon-registered') toast('info', `信标已注册：${ev.session?.hostname||ev.data||''}`);
+    if (ev.type === 'session-connected' || ev.type === 'session-opened') notifyOperational({ category:'agent', level:'info', title:'Session 上线', message:`新会话：${ev.session?.hostname||'未知主机'}`, tag:'session-online' });
+    if (ev.type === 'beacon-registered') notifyOperational({ category:'agent', level:'info', title:'Beacon 上线', message:`信标已注册：${ev.session?.hostname||'未知主机'}`, tag:'beacon-online' });
   });
 }
 function logEvent(ev) {
@@ -342,6 +369,19 @@ async function refreshAgents() {
   renderTable();
   refreshOpenAgentHeaders();
   if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
+  refreshListenerHealth();
+}
+
+async function refreshListenerHealth() {
+  const jobs = await App().ListJobs().catch(() => null);
+  if (!jobs) return;
+  const current = new Map(jobs.map(job => [String(job.id), job]));
+  if (listenerSnapshot) {
+    for (const [id, previous] of listenerSnapshot) {
+      if (!current.has(id)) notifyOperational({ category:'listener', level:'warning', title:'Listener 状态变化', message:`客户端观察到监听器 ${previous.name || '#' + id} 已不在活动列表中`, tag:`listener-${id}` });
+    }
+  }
+  listenerSnapshot = current;
 }
 function refreshOpenAgentHeaders() {
   for (const [id, tab] of Object.entries(openTabs)) {
@@ -2150,6 +2190,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
     if (view === 'c2profiles') openC2ProfileEditor();
     if (view === 'infrastructure') openInfrastructurePanel();
     if (view === 'extensions') openExtensionCenter();
+    if (view === 'team') openTeamCenter();
   });
 });
 
@@ -2468,6 +2509,121 @@ function renderBuilderCenter(content, snapshot) {
   document.getElementById('builder-builds')?.addEventListener('click',openBuildsPanel);
 }
 
+let teamCenterState = { tab: 'connection', snapshot: null, audit: [], report: null };
+
+async function openTeamCenter(tab = teamCenterState.tab) {
+  teamCenterState.tab = tab;
+  openViewPanel('_team', '团队与审计', '<div class="infra-loading"><span class="spinner"></span>正在读取团队状态...</div>');
+  try { teamCenterState.snapshot = await App().GetTeamCenterSnapshot(); }
+  catch (error) { document.getElementById('modal-body').innerHTML = rpcErrorHtml(error, '加载团队状态失败'); return; }
+  renderTeamCenter();
+}
+
+function renderTeamCenter() {
+  const tabs = [['connection','连接'],['operators','操作员'],['audit','审计时间线'],['notifications','通知'],['report','行动报告']];
+  const state = teamCenterState;
+  openViewPanel('_team', '团队与审计', `<div class="team-center"><div class="ext-tabs">${tabs.map(([id,label]) => `<button class="ext-tab${state.tab === id ? ' active' : ''}" data-team-tab="${id}">${label}</button>`).join('')}</div><div id="team-content"></div></div>`);
+  document.querySelectorAll('[data-team-tab]').forEach(button => button.addEventListener('click', () => { state.tab = button.dataset.teamTab; renderTeamCenter(); }));
+  const content = document.getElementById('team-content');
+  if (state.tab === 'connection') renderTeamConnection(content);
+  if (state.tab === 'operators') renderTeamOperators(content);
+  if (state.tab === 'audit') renderAuditTimeline(content);
+  if (state.tab === 'notifications') renderNotificationSettings(content);
+  if (state.tab === 'report') renderActionReport(content);
+}
+
+function renderTeamConnection(content) {
+  const snapshot = teamCenterState.snapshot || {};
+  const online = (snapshot.operators || []).filter(operator => operator.online).length;
+  content.innerHTML = `<div class="team-summary"><div><span>连接状态</span><strong class="${snapshot.connected ? 'status-alive' : 'status-dead'}">${snapshot.connected ? '已连接' : '未连接'}</strong></div><div><span>当前操作员</span><strong>${esc(snapshot.operator || '-')}</strong></div><div><span>在线操作员</span><strong>${online}</strong></div></div>${(snapshot.warnings || []).map(warning => `<div class="ext-risk">${esc(warning)}</div>`).join('')}<div class="task-note">连接地址和操作员配置路径不会进入报告或通知。</div>`;
+}
+
+function renderTeamOperators(content) {
+  const operators = teamCenterState.snapshot?.operators || [];
+  content.innerHTML = `<div class="section-heading"><div><h3>操作员状态</h3><p>状态来自当前 Teamserver 多人协作接口。</p></div><button class="btn small" id="team-refresh">刷新</button></div><div class="operator-grid">${operators.map(operator => `<div class="operator-row"><span class="agent-live-dot${operator.online ? '' : ' dead'}"></span><strong>${esc(operator.name)}</strong><span>${operator.online ? '在线' : '离线'}</span></div>`).join('') || '<div class="empty-state">暂无操作员数据</div>'}</div>`;
+  document.getElementById('team-refresh')?.addEventListener('click', () => openTeamCenter('operators'));
+}
+
+async function loadAuditTimeline() {
+  const filter = {
+    operator: document.getElementById('audit-operator')?.value || '', action: document.getElementById('audit-action')?.value || '',
+    target: document.getElementById('audit-target')?.value || '', since: document.getElementById('audit-since')?.value || '',
+    until: document.getElementById('audit-until')?.value || '', limit: 500,
+  };
+  const table = document.getElementById('audit-results');
+  table.innerHTML = '<div class="infra-loading"><span class="spinner"></span>正在查询...</div>';
+  try { teamCenterState.audit = await App().QueryAuditTimeline(filter); drawAuditRows(table, teamCenterState.audit || []); }
+  catch (error) { table.innerHTML = rpcErrorHtml(error, '查询审计时间线失败'); }
+}
+
+function drawAuditRows(container, entries) {
+  container.innerHTML = entries.length ? `<div class="infra-table-wrap"><table class="data-table infra-table"><thead><tr><th>时间</th><th>操作员</th><th>操作</th><th>目标</th><th>结果</th><th>摘要</th></tr></thead><tbody>${entries.slice().reverse().map(entry => `<tr><td>${esc(new Date(entry.time).toLocaleString())}</td><td>${esc(entry.operator || '-')}</td><td>${esc(entry.action)}</td><td>${esc(entry.target)}</td><td>${esc(entry.outcome)}</td><td>${esc(entry.summary)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty-state">当前筛选条件下暂无审计记录</div>';
+}
+
+function renderAuditTimeline(content) {
+  content.innerHTML = `<div class="audit-filters"><label>操作员<input id="audit-operator"/></label><label>操作<input id="audit-action"/></label><label>目标<input id="audit-target"/></label><label>开始日期<input id="audit-since" type="date"/></label><label>结束日期<input id="audit-until" type="date"/></label><button class="btn accent" id="audit-query">查询</button></div><div class="task-note">审计时间线只返回安全摘要；服务器地址、命令正文、凭据、完整路径和原始错误均不展示。</div><div id="audit-results"></div>`;
+  document.getElementById('audit-query')?.addEventListener('click', loadAuditTimeline);
+  loadAuditTimeline();
+}
+
+function renderNotificationSettings(content) {
+  const settings = notificationSettings;
+  content.innerHTML = `<div class="notification-form"><label class="check-label"><input id="notify-enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}/> 启用应用内通知</label><label>最低级别<select id="notify-level"><option value="info">信息</option><option value="warning">警告</option><option value="critical">严重</option></select></label><fieldset><legend>通知类别</legend><label class="check-label"><input id="notify-agent" type="checkbox" ${settings.categories.agent ? 'checked' : ''}/> Session / Beacon 上线</label><label class="check-label"><input id="notify-task" type="checkbox" ${settings.categories.task ? 'checked' : ''}/> 任务失败</label><label class="check-label"><input id="notify-listener" type="checkbox" ${settings.categories.listener ? 'checked' : ''}/> Listener 异常</label></fieldset><div class="quiet-row"><label>静默开始<input id="notify-quiet-start" type="time" value="${esc(settings.quietStart)}"/></label><label>静默结束<input id="notify-quiet-end" type="time" value="${esc(settings.quietEnd)}"/></label></div><label class="check-label"><input id="notify-desktop" type="checkbox" ${settings.desktop ? 'checked' : ''}/> 启用 Windows 桌面通知</label><div class="ext-actions"><button class="btn accent" id="notify-save">保存设置</button><button class="btn small" id="notify-test">测试通知</button></div><div class="task-note">桌面通知仅在显式启用后申请系统权限。Listener 异常为客户端对活动 Job 列表的观察结果。</div></div>`;
+  document.getElementById('notify-level').value = settings.minimumLevel;
+  document.getElementById('notify-save')?.addEventListener('click', async () => {
+    const desktop = document.getElementById('notify-desktop').checked;
+    if (desktop && 'Notification' in window && Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') { document.getElementById('notify-desktop').checked = false; toast('info','未启用桌面通知权限'); }
+    }
+    notificationSettings = {
+      enabled: document.getElementById('notify-enabled').checked, desktop: document.getElementById('notify-desktop').checked,
+      minimumLevel: document.getElementById('notify-level').value, quietStart: document.getElementById('notify-quiet-start').value,
+      quietEnd: document.getElementById('notify-quiet-end').value,
+      categories: { agent: document.getElementById('notify-agent').checked, task: document.getElementById('notify-task').checked, listener: document.getElementById('notify-listener').checked },
+    };
+    saveNotificationSettings(); toast('ok','通知设置已保存');
+  });
+  document.getElementById('notify-test')?.addEventListener('click', () => notifyOperational({ category:'agent', level:'info', title:'通知测试', message:'通知规则工作正常', tag:'notification-test' }));
+}
+
+function reportRequest(redactOperational) {
+  return {
+    redactOperational,
+    tasks: taskStore.list().map(task => ({ type:task.type, title:task.title, target:task.target, status:task.status, startedAt:task.startedAt, finishedAt:task.finishedAt || 0, summary:task.summary })),
+    events: eventLog.map(event => ({ time:event.time, type:event.type })),
+  };
+}
+
+async function buildReportPreview(redactOperational) {
+  const box = document.getElementById('report-preview');
+  box.innerHTML = '<div class="infra-loading"><span class="spinner"></span>正在关联任务、IOC、Loot、Host 和时间线...</div>';
+  try { teamCenterState.report = await App().BuildActionReport(reportRequest(redactOperational)); drawReportPreview(box, teamCenterState.report); }
+  catch (error) { box.innerHTML = rpcErrorHtml(error, '生成报告预览失败'); }
+}
+
+function drawReportPreview(container, preview) {
+  const findings = (preview.findings || []).map(finding => `<span>${esc(finding.kind)}：${finding.count}</span>`).join('') || '<span>未发现额外敏感项</span>';
+  container.innerHTML = `<div class="report-findings"><strong>导出前敏感检查</strong>${findings}</div>${(preview.warnings || []).map(warning => `<div class="ext-risk">${esc(warning)}</div>`).join('')}<pre class="scr-output report-output">${esc(preview.markdown)}</pre>`;
+}
+
+function renderActionReport(content) {
+  content.innerHTML = `<div class="section-heading"><div><h3>行动报告</h3><p>关联本次运行任务、IOC、Teamserver Loot、Host 和安全审计时间线。</p></div></div><div class="report-toolbar"><label class="check-label"><input id="report-redact-operational" type="checkbox" checked/> 额外隐藏目标标识和 IOC 路径</label><button class="btn accent" id="report-build">刷新预览</button><button class="btn small" id="report-copy" disabled>复制报告</button><button class="btn small" id="report-console" disabled>输出到控制台</button></div><div class="task-note">凭据、Token、私钥、连接地址、命令正文、完整本地路径和原始后端错误始终不导出。</div><div id="report-preview"></div>`;
+  const rebuild = async () => { await buildReportPreview(document.getElementById('report-redact-operational').checked); const ready = Boolean(teamCenterState.report?.markdown); document.getElementById('report-copy').disabled = !ready; document.getElementById('report-console').disabled = !ready; };
+  document.getElementById('report-build')?.addEventListener('click', rebuild);
+  document.getElementById('report-redact-operational')?.addEventListener('change', rebuild);
+  document.getElementById('report-copy')?.addEventListener('click', async () => { await navigator.clipboard.writeText(teamCenterState.report?.markdown || ''); toast('ok','报告已复制到剪贴板'); });
+  document.getElementById('report-console')?.addEventListener('click', () => outputReportToConsole(teamCenterState.report?.markdown || ''));
+  rebuild();
+}
+
+function outputReportToConsole(report) {
+  const out = activeInteractId ? document.querySelector(`#ip-${activeInteractId} .console-out`) : null;
+  if (!out) return toast('info','请先打开一个目标控制台');
+  const block = document.createElement('div'); block.className = 'out'; block.style.whiteSpace = 'pre-wrap'; block.textContent = report;
+  out.appendChild(block); out.scrollTop = out.scrollHeight; hideModal(); toast('ok','报告已输出到控制台');
+}
+
 const taskStatusMeta = {
   queued: { label: '排队中', cls: 'queued' },
   running: { label: '运行中', cls: 'running' },
@@ -2540,7 +2696,16 @@ function openTaskCenter(agentId = '') {
   });
   renderTaskCenter();
 }
-taskStore.subscribe(renderTaskCenter);
+taskStore.subscribe(tasks => {
+  renderTaskCenter();
+  tasks.forEach(task => {
+    const previous = taskNotificationStates.get(task.id);
+    if (task.status === 'failed' && previous !== 'failed') {
+      notifyOperational({ category:'task', level:'critical', title:'任务失败', message:`${task.title || '任务'}执行失败`, tag:`task-${task.id}` });
+    }
+    taskNotificationStates.set(task.id, task.status);
+  });
+});
 
 // ── Script Manager Panel (Cobalt Strike-style lateral movement / privesc / persistence) ──
 // ── Script Manager Panel (Cobalt Strike-style lateral movement / privesc / persistence) ──
@@ -4206,47 +4371,7 @@ function localizeReportMarkdown(report) {
 }
 
 async function exportReport() {
-  const rawReport = await App().GenerateReport().catch(e => '# 生成报告失败\n\n' + e);
-  const report = localizeReportMarkdown(rawReport);
-  const html = `<div style="display:flex;flex-direction:column;gap:10px;flex:1;min-height:0">
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button id="report-copy-btn" class="btn small">复制到剪贴板</button>
-      <button id="report-console-btn" class="btn small">输出到控制台</button>
-      <span id="report-status" style="color:var(--muted);font-size:11px"></span>
-    </div>
-    <pre id="report-content" class="scr-output" style="flex:1;min-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:11.5px;line-height:1.6">${esc(report)}</pre>
-  </div>`;
-  openViewPanel('_report', '参与行动报告', html);
-
-  document.getElementById('report-copy-btn')?.addEventListener('click', () => {
-    navigator.clipboard.writeText(report).then(() => {
-      document.getElementById('report-status').textContent = '已复制！';
-      toast('ok', '报告已复制到剪贴板');
-    }).catch(() => {
-      const el = document.getElementById('report-content');
-      const range = document.createRange(); range.selectNodeContents(el);
-      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
-      document.getElementById('report-status').textContent = '文本已选中，请按 Ctrl+C 复制';
-    });
-  });
-
-  document.getElementById('report-console-btn')?.addEventListener('click', () => {
-    // Print the report into the active session console tab
-    const panelId = activeInteractId ? `ip-${activeInteractId}` : null;
-    const out = panelId ? document.querySelector(`#${panelId} .console-out`) : null;
-    if (out) {
-      const block = document.createElement('div');
-      block.className = 'out';
-      block.style.cssText = 'white-space:pre-wrap;color:var(--text-dim);font-size:11px;border-top:1px solid var(--border);padding:8px 0;margin-top:4px';
-      block.textContent = report;
-      out.appendChild(block);
-      out.scrollTop = out.scrollHeight;
-      hideModal();
-      toast('ok', '报告已输出到控制台');
-    } else {
-      toast('info', '请先打开一个会话标签页，再使用“输出到控制台”');
-    }
-  });
+  await openTeamCenter('report');
 }
 
 // ── C2 Profile Editor ─────────────────────────────────────────────────────────

@@ -261,12 +261,12 @@ C2 配置
 
 任务：
 
-- [ ] 在线操作员与连接状态页面。
-- [ ] 可筛选的统一审计时间线。
-- [ ] Session/Beacon 上线、任务失败和 Listener 异常通知。
-- [ ] 通知级别、静默规则和本地桌面通知设置。
-- [ ] 行动报告关联任务、IOC、Loot、Host 和时间线。
-- [ ] 报告导出前提供敏感信息检查和脱敏选项。
+- [x] 在线操作员与连接状态页面。
+- [x] 可筛选的统一审计时间线。
+- [x] Session/Beacon 上线、任务失败和 Listener 异常通知。
+- [x] 通知级别、静默规则和本地桌面通知设置。
+- [x] 行动报告关联任务、IOC、Loot、Host 和时间线。
+- [x] 报告导出前提供敏感信息检查和脱敏选项。
 
 完成标准：
 
@@ -290,7 +290,7 @@ C2 配置
 | Anti-virus Evasion | 文档 | M3 | 只呈现上游已暴露的构建选项和风险说明 |
 | Architecture | 文档 | M0 | 作为兼容性和架构说明 |
 | Armory | 已有 | M5 | 已有安装、更新、移除和进度；minisign 验证仍受客户端实现限制 |
-| Audit Log | 部分 | M6 | 已有本地审计日志，需统一时间线和脱敏 |
+| Audit Log | 已有 | M6 | 已统一安全写入、筛选时间线和报告脱敏检查 |
 | BOF and COFF Support | 已有 | M5 | 已按 Manifest 展示参数、平台、风险和执行结果 |
 | C2 Advanced Options | 部分 | M3 | 纳入结构化 C2 编辑器 |
 | Community Guides | 文档 | M0 | 维护外部链接，不复制内容 |
@@ -314,8 +314,8 @@ C2 配置
 | Loot | 已有 | M2/M6 | 强化来源、预览、筛选、下载和报告关联 |
 | MCP | 待评估 | 后续 | 先确认上游安全模型、接口稳定性和实际用途 |
 | Minisign Public Key | 文档 | - | 上游发布验证信息 |
-| Multi-player Mode | 部分 | M6 | 已使用操作员配置，需在线状态和协作可见性 |
-| Notifications | 部分 | M6 | 已有事件提示，需规则、级别和桌面通知 |
+| Multi-player Mode | 已有 | M6 | 已提供连接状态、在线操作员和协作审计视图 |
+| Notifications | 已有 | M6 | 已提供事件类别、级别、静默时段和桌面通知设置 |
 | OPFOR | 待评估 | 后续 | 先确认是否有稳定 RPC 和适合 GUI 的流程 |
 | Payload Compatibility | 文档 | M3 | 在生成前展示兼容性提示 |
 | Pivots | 已有 | M4 | 强化拓扑状态、诊断和下游影响 |
@@ -327,7 +327,7 @@ C2 配置
 | Traffic Encoders | 部分 | M3/M5 | 已能列出，需生成配置和兼容性校验 |
 | Transport Encryption | 文档 | M0 | 展示连接安全信息，不重新实现协议 |
 | Troubleshooting | 部分 | M0 | 建立诊断页面、错误分类和处理建议 |
-| Watchtower | 待评估 | M6 | 核对当前 RPC、通知来源和版本支持 |
+| Watchtower | 待评估 | M6 | 当前 Listener 异常仅为客户端 Job 快照观察，不声称实现 Watchtower |
 | Wireguard C2 | 部分 | M3/M4 | 已有 Listener 和转发，需配置与状态整合 |
 | mTLS C2 | 部分 | M3 | 已有 Listener/生成，需完整工作流 |
 
@@ -360,9 +360,9 @@ node --check frontend/dist/main.js
 
 1. [已完成] 建立 `ServerCapabilities` 数据结构和只读兼容性弹窗。
 2. [已完成] 统一前端 RPC 错误格式及中文错误展示。
-3. 建立最小任务中心，先接入 Beacon Task 和 Implant Generate。
-4. 将 Session/Beacon 详情逐步整理为标签式工作区。
-5. 再进入 Listener、C2 Profile 和 Implant Studio 的流程整合。
+3. [已完成] 建立最小任务中心，接入 Beacon Task、Implant Generate 和扩展安装。
+4. [已完成] 将 Session/Beacon 详情整理为标签式工作区。
+5. [已完成] 完成 Listener、C2 Profile 和 Implant Studio 的流程整合。
 6. [已完成] 为目标控制台和 Teamserver 管理控制台增加上下文相关的 Tab 命令补全。
 
 第一项只读取远程 Teamserver 已公开的信息，不修改远程配置，适合作为增强工作的起点。
