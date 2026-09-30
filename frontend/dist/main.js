@@ -2582,22 +2582,34 @@ async function runServerCmd(raw) {
       case 'armory': {
         const sub = (args[0]||'').toLowerCase();
         if (sub === 'install') {
-          if (!args[1]) return appendServer('usage: armory install <name>', 'err');
-          appendServer(`[*] installing ${args[1]}...`, 'info');
-          const err = await App().ArmoryInstall(args[1]).then(() => null).catch(e => String(e));
-          return appendServer(err ? `[!] ${err}` : `[+] ${args[1]} installed`, err ? 'err' : 'out');
+          if (!args[1]) return appendServer('用法：armory install <包名>', 'err');
+          const packageName = args[1];
+          const installTask = taskStore.create({
+            type: 'armory-install', title: '安装 Armory 包', target: packageName,
+            status: 'running', summary: '正在获取并安装软件包',
+          });
+          appendServer(`[*] 正在安装 ${packageName}...`, 'info');
+          const error = await App().ArmoryInstall(packageName).then(() => null).catch(error => error);
+          if (error) {
+            const message = rpcErrorMessage(error, 'Armory 安装失败');
+            const safeMessage = RpcErrors.safeRpcErrorMessage(error, 'Armory 安装失败');
+            taskStore.update(installTask.id, { status: 'failed', summary: safeMessage, error: safeMessage });
+            return appendServer(`[错误] ${message}`, 'err');
+          }
+          taskStore.update(installTask.id, { status: 'success', summary: '软件包安装完成' });
+          return appendServer(`[成功] ${packageName} 已安装`, 'out');
         }
         if (sub === 'remove' || sub === 'rm') {
-          if (!args[1]) return appendServer('usage: armory remove <name>', 'err');
-          const err = await App().ArmoryRemove(args[1]).then(() => null).catch(e => String(e));
-          return appendServer(err ? `[!] ${err}` : `[+] ${args[1]} removed`, err ? 'err' : 'out');
+          if (!args[1]) return appendServer('用法：armory remove <包名>', 'err');
+          const error = await App().ArmoryRemove(args[1]).then(() => null).catch(error => error);
+          return appendServer(error ? `[错误] ${rpcErrorMessage(error, '移除 Armory 包失败')}` : `[成功] ${args[1]} 已移除`, error ? 'err' : 'out');
         }
-        const pkgs = await App().ArmoryList().catch(e => { appendServer(`[!] ${e}`, 'err'); return null; });
+        const pkgs = await App().ArmoryList().catch(error => { appendServer(`[错误] ${rpcErrorMessage(error, '加载 Armory 列表失败')}`, 'err'); return null; });
         if (!pkgs) return;
-        if (!pkgs.length) return appendServer('no armory packages available', 'info');
-        let out = `${'NAME'.padEnd(28)}${'TYPE'.padEnd(11)}${'INSTALLED'.padEnd(11)}DESCRIPTION
+        if (!pkgs.length) return appendServer('暂无可用的 Armory 包', 'info');
+        let out = `${'名称'.padEnd(28)}${'类型'.padEnd(11)}${'已安装'.padEnd(11)}说明
 `;
-        pkgs.forEach(p => { out += `${(p.name||'').slice(0,27).padEnd(28)}${(p.type||'').padEnd(11)}${(p.installed?'yes':'no').padEnd(11)}${(p.description||'').slice(0,50)}
+        pkgs.forEach(p => { out += `${(p.name||'').slice(0,27).padEnd(28)}${(p.type === 'alias' ? '别名' : '扩展').padEnd(11)}${(p.installed?'是':'否').padEnd(11)}${(p.description||'').slice(0,50)}
 `; });
         return appendServer(out.trimEnd(), 'out');
       }

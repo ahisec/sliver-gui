@@ -55,3 +55,18 @@ test('hides unknown backend details in task-safe summaries', () => {
     'Beacon 命令提交失败：团队服务器暂时不可用或连接已中断',
   );
 });
+
+test('translates Armory download and compatibility failures', () => {
+  assert.equal(
+    rpcErrorMessage('no compatible asset found for windows/amd64 in package release v1'),
+    'Armory 包没有适用于当前系统和架构的构建产物',
+  );
+  assert.equal(
+    rpcErrorMessage('GitHub API returned HTTP 403 for package'),
+    'Armory 服务请求失败，请稍后重试或检查 GitHub 访问状态',
+  );
+  assert.equal(
+    rpcErrorMessage('download asset: context deadline exceeded'),
+    'Armory 网络请求超时，请检查 GitHub 连接后重试',
+  );
+});
