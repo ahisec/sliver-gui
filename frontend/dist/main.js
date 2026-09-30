@@ -34,7 +34,9 @@ function saveState() {
   saveTimer = setTimeout(() => {
     try {
       localStorage.setItem(persistKey, JSON.stringify({
-        notes: notesMap, integrity: integrityMap, graph: graphPos, v: 1,
+        notes: notesMap, integrity: integrityMap, graph: graphPos,
+        workspace: Object.fromEntries(Object.entries(openTabs).filter(([, value]) => value.obj).map(([id, value]) => [id, value.workspaceView || 'terminal'])),
+        v: 2,
       }));
     } catch (e) { /* quota/private-mode: state stays in-memory only */ }
   }, 300);
@@ -47,6 +49,7 @@ function loadState() {
   Object.assign(notesMap, data.notes || {});
   Object.assign(integrityMap, data.integrity || {});
   Object.assign(graphPos, data.graph || {});
+  window.savedWorkspaceViews = data.workspace || {};
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────
@@ -324,7 +327,22 @@ async function refreshAgents() {
   pivotTree = await App().GetPivotGraph().catch(() => []) || [];
   document.getElementById('agent-count').textContent = `${allSessions.length} 个会话 | ${allBeacons.length} 个信标`;
   renderTable();
+  refreshOpenAgentHeaders();
   if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
+}
+function refreshOpenAgentHeaders() {
+  for (const [id, tab] of Object.entries(openTabs)) {
+    if (!tab.obj) continue;
+    const latest = (tab.kind === 'session' ? allSessions : allBeacons).find(item => item.id === id);
+    if (!latest) continue;
+    tab.obj = latest;
+    const panel = document.getElementById(`ip-${id}`);
+    panel?.querySelector('.agent-live-dot')?.classList.toggle('dead', Boolean(latest.isDead));
+    const state = panel?.querySelector('.agent-workspace-state');
+    if (state) state.textContent = tab.kind === 'beacon'
+      ? `异步信标 · 上次签到 ${latest.lastCheckin || '-'} · 下次预计 ${latest.nextCheckin || '-'} · ${fmtDur(latest.interval)} ± ${fmtDur(latest.jitter)}`
+      : `${latest.isDead ? '已失联' : '实时会话'} · 最近活动 ${latest.lastCheckin || '-'} · PID ${latest.pid || '-'}`;
+  }
 }
 document.getElementById('refresh-all-btn').addEventListener('click', refreshAgents);
 
@@ -759,7 +777,7 @@ document.getElementById('ctx-kill').addEventListener('click', async () => {
 function openInteract(kind, obj) {
   const id = obj.id;
   if (openTabs[id]) { activateTab(id); return; }
-  openTabs[id] = { kind, obj };
+  openTabs[id] = { kind, obj, workspaceView: window.savedWorkspaceViews?.[id] || 'terminal' };
   document.getElementById('empty-interact')?.remove();
   // Create tab
   const tab = document.createElement('button'); tab.className = 'interact-tab'; tab.dataset.tid = id;
@@ -779,6 +797,29 @@ function openInteract(kind, obj) {
       `[信息] 交互式会话，命令将立即执行。\n` +
       `[信息] 输入 'help' 查看可用命令。\n`;
   panel.innerHTML = `
+    <div class="agent-workspace-header">
+      <div class="agent-workspace-identity">
+        <span class="agent-live-dot ${obj.isDead ? 'dead' : ''}"></span>
+        <strong>${esc(obj.hostname || obj.name || id.slice(0, 8))}</strong>
+        <span>${esc(obj.username || '-')}</span><span>${esc(obj.os || '-')}/${esc(obj.arch || '-')}</span>
+        <span>${esc(obj.transport || '-')}</span>
+      </div>
+      <div class="agent-workspace-state">${kind === 'beacon'
+        ? `异步信标 · 上次签到 ${esc(obj.lastCheckin || '-')} · 下次预计 ${esc(obj.nextCheckin || '-')} · ${esc(fmtDur(obj.interval))} ± ${esc(fmtDur(obj.jitter))}`
+        : `${obj.isDead ? '已失联' : '实时会话'} · 最近活动 ${esc(obj.lastCheckin || '-')} · PID ${esc(obj.pid || '-')}`}</div>
+    </div>
+    <div class="agent-workspace-nav" id="workspace-nav-${id}">
+      ${[
+        ['overview','概览'], ['terminal','终端'], ['files','文件'], ['processes','进程'], ['network','网络'],
+        ['services','服务'], ['environment','环境'], ['tasks','任务'], ['loot','Loot'], ['pivots','Pivot'],
+      ].map(([view, label]) => `<button class="workspace-tab${openTabs[id].workspaceView === view ? ' active' : ''}" data-workspace-view="${view}"${kind === 'beacon' && ['files','processes','network','services','environment','pivots'].includes(view) ? ' disabled title="需要实时 Session"' : ''}>${label}</button>`).join('')}
+    </div>
+    <div class="agent-overview${openTabs[id].workspaceView === 'overview' ? '' : ' hidden'}" id="agent-overview-${id}">
+      <div><span>目标 ID</span><strong>${esc(id)}</strong></div><div><span>远程地址</span><strong>${esc(obj.remoteAddress || '-')}</strong></div>
+      <div><span>主机</span><strong>${esc(obj.hostname || '-')}</strong></div><div><span>用户</span><strong>${esc(obj.username || '-')}</strong></div>
+      <div><span>系统</span><strong>${esc(obj.os || '-')}/${esc(obj.arch || '-')}</strong></div><div><span>传输</span><strong>${esc(obj.transport || '-')}</strong></div>
+    </div>
+    <div class="agent-terminal${openTabs[id].workspaceView === 'overview' ? ' hidden' : ''}" id="agent-terminal-${id}">
     <div class="console-script-bar" id="csb-${id}">
       <div class="csb-header">
         <div class="csb-title">
@@ -805,6 +846,7 @@ function openInteract(kind, obj) {
     </div>
     <div class="console-out" id="cout-${id}"><span class="info">${esc(helpText)}</span></div>
     <div class="console-in"><span class="console-prompt">${esc(promptStr)} </span><input class="console-input" id="cinp-${id}" placeholder="输入命令..." autocomplete="off"/></div>
+    </div>
   `;
   document.getElementById('interact-panels').appendChild(panel);
   // Wire input
@@ -816,7 +858,33 @@ function openInteract(kind, obj) {
     if (e.key === 'ArrowDown') { if (hIdx > 0) { hIdx--; inp.value = hist[hIdx]; } else { hIdx=-1; inp.value=''; } e.preventDefault(); }
   });
   attachConsoleScriptManager(id, kind, obj);
+  panel.querySelectorAll('[data-workspace-view]').forEach(button => button.addEventListener('click', () => switchWorkspaceView(id, button.dataset.workspaceView)));
   activateTab(id);
+}
+
+function switchWorkspaceView(id, view) {
+  const tab = openTabs[id];
+  if (!tab?.obj) return;
+  if (view === 'files') { openFileBrowser(id); return; }
+  if (view === 'processes') { openProcessBrowser(id); return; }
+  if (view === 'tasks' && tab.kind === 'session') { openTaskCenter(id); return; }
+  tab.workspaceView = view;
+  saveState();
+  document.querySelectorAll(`#workspace-nav-${id} .workspace-tab`).forEach(button => button.classList.toggle('active', button.dataset.workspaceView === view));
+  const overview = document.getElementById(`agent-overview-${id}`);
+  const terminal = document.getElementById(`agent-terminal-${id}`);
+  overview?.classList.toggle('hidden', view !== 'overview');
+  terminal?.classList.toggle('hidden', view === 'overview');
+  if (view === 'overview' || view === 'terminal') return;
+  const commands = { network: 'ifconfig', services: 'services', environment: 'env', tasks: 'tasks', loot: 'loot', pivots: 'pivot' };
+  const input = document.getElementById(`cinp-${id}`);
+  if (input && commands[view]) {
+    input.value = commands[view];
+    runAgentCmd(tab.kind, id, input, []);
+    tab.workspaceView = 'terminal';
+    document.querySelectorAll(`#workspace-nav-${id} .workspace-tab`).forEach(button => button.classList.toggle('active', button.dataset.workspaceView === 'terminal'));
+    saveState();
+  }
 }
 
 function attachConsoleScriptManager(id, kind, obj) {
@@ -2067,7 +2135,8 @@ function renderTaskCenter() {
   document.querySelectorAll('[data-task-filter]').forEach(button => {
     button.classList.toggle('active', button.dataset.taskFilter === taskCenterFilter);
   });
-  const tasks = taskStore.list(taskCenterFilter);
+  const agentId = document.querySelector('.task-center')?.dataset.taskAgent || '';
+  const tasks = taskStore.list(taskCenterFilter).filter(task => !agentId || task.agentId === agentId);
   if (!tasks.length) {
     list.innerHTML = '<div class="task-empty">当前筛选条件下暂无任务。</div>';
     return;
@@ -2086,11 +2155,11 @@ function renderTaskCenter() {
     }).join('')}</tbody></table></div>`;
 }
 
-function openTaskCenter() {
+function openTaskCenter(agentId = '') {
   const filters = [
     ['all', '全部'], ['active', '进行中'], ['completed', '已完成'], ['failed', '失败/取消'],
   ];
-  const content = `<div class="task-center">
+  const content = `<div class="task-center" data-task-agent="${esc(agentId)}">
     <div class="task-toolbar">
       <div class="task-filters">${filters.map(([value, label]) => `<button class="vb-btn" data-task-filter="${value}">${label}</button>`).join('')}</div>
       <span class="spacer"></span><button class="btn small" id="task-clear-completed">清理已结束</button>

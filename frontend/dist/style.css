@@ -164,6 +164,23 @@ input::placeholder{color:var(--muted);}
 .interact-panels{flex:1;overflow:hidden;min-height:0;position:relative;}
 .interact-panel{display:none;flex-direction:column;height:100%;position:absolute;inset:0;}
 .interact-panel.active{display:flex;}
+.agent-workspace-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--panel-alt);flex-shrink:0;}
+.agent-workspace-identity{display:flex;align-items:center;gap:9px;min-width:0;font-size:11px;color:var(--text-dim);}
+.agent-workspace-identity strong{color:var(--text);font-size:12.5px;overflow-wrap:anywhere;}
+.agent-live-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px rgba(53,196,107,.12);flex:0 0 auto;}
+.agent-live-dot.dead{background:var(--accent);box-shadow:0 0 0 3px rgba(226,60,78,.12);}
+.agent-workspace-state{font-size:10px;color:var(--muted);text-align:right;white-space:normal;}
+.agent-workspace-nav{display:flex;align-items:center;gap:1px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--panel);overflow-x:auto;flex-shrink:0;}
+.workspace-tab{height:31px;padding:0 10px;border:0;border-bottom:2px solid transparent;background:none;color:var(--muted);font-size:10.5px;cursor:pointer;white-space:nowrap;}
+.workspace-tab:hover:not(:disabled){color:var(--text);background:var(--panel-hi);}
+.workspace-tab.active{color:var(--cyan);border-bottom-color:var(--cyan);}
+.workspace-tab:disabled{opacity:.35;cursor:not-allowed;}
+.agent-overview{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--border);overflow:auto;}
+.agent-overview>div{padding:13px;background:var(--panel);min-width:0;}
+.agent-overview span{display:block;margin-bottom:5px;color:var(--muted);font-size:9.5px;text-transform:uppercase;}
+.agent-overview strong{display:block;color:var(--text);font-family:var(--mono);font-size:11.5px;overflow-wrap:anywhere;}
+.agent-terminal{display:flex;flex-direction:column;flex:1;min-height:0;}
+@media (max-width:720px){.agent-workspace-header{align-items:flex-start;flex-direction:column}.agent-workspace-state{text-align:left}.agent-workspace-identity{flex-wrap:wrap}.agent-overview{grid-template-columns:1fr}}
 .empty-interact{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:12px;text-align:center;padding:24px;}
 
 /* Console */
