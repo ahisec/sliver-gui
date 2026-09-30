@@ -31,6 +31,10 @@
         error: input.error || '',
         remoteTaskId: input.remoteTaskId || '',
         agentId: input.agentId || '',
+        canCancel: Boolean(input.canCancel),
+        canRetry: Boolean(input.canRetry),
+        timeoutMs: Math.max(0, Number(input.timeoutMs) || 0),
+        policy: input.policy || '',
       };
       if (terminalStatuses.has(task.status) && task.finishedAt == null) task.finishedAt = timestamp;
       tasks = [task, ...tasks].slice(0, limit);
@@ -41,11 +45,20 @@
     function update(id, changes) {
       const index = tasks.findIndex(task => task.id === id);
       if (index < 0) return null;
-      const next = { ...tasks[index], ...changes };
+      if (terminalStatuses.has(tasks[index].status) && !changes.allowTerminalTransition) {
+        return { ...tasks[index] };
+      }
+      const { allowTerminalTransition, ...safeChanges } = changes;
+      const next = { ...tasks[index], ...safeChanges };
       if (terminalStatuses.has(next.status) && next.finishedAt == null) next.finishedAt = now();
       tasks = tasks.map((task, taskIndex) => taskIndex === index ? next : task);
       emit();
       return { ...next };
+    }
+
+    function get(id) {
+      const task = tasks.find(item => item.id === id);
+      return task ? { ...task } : null;
     }
 
     function list(filter = 'all') {
@@ -71,7 +84,7 @@
       return () => listeners.delete(listener);
     }
 
-    return { create, update, list, clearCompleted, subscribe };
+    return { create, update, get, list, clearCompleted, subscribe };
   }
 
   function durationMs(task, currentTime = Date.now()) {

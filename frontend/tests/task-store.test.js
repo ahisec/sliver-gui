@@ -39,3 +39,24 @@ test('filters active and failed tasks and clears terminal records', () => {
   assert.equal(store.clearCompleted(), 3);
   assert.deepEqual(store.list().map(task => task.id), ['active']);
 });
+
+test('records action policy without allowing late polling to overwrite cancellation', () => {
+  let time = 100;
+  const store = createTaskStore({ now: () => time });
+  store.create({ id: 'remote', status: 'waiting', canCancel: true, timeoutMs: 30000 });
+  time = 200;
+  store.update('remote', { status: 'cancelled', canCancel: false });
+  time = 300;
+  const unchanged = store.update('remote', { status: 'success', summary: 'late result' });
+
+  assert.equal(unchanged.status, 'cancelled');
+  assert.equal(unchanged.finishedAt, 200);
+  assert.equal(store.get('remote').timeoutMs, 30000);
+});
+
+test('allows an explicit terminal transition for a deliberate retry reset', () => {
+  const store = createTaskStore({ now: () => 100 });
+  store.create({ id: 'retry', status: 'failed', canRetry: true });
+  const reset = store.update('retry', { status: 'running', canRetry: false, allowTerminalTransition: true });
+  assert.equal(reset.status, 'running');
+});

@@ -18,6 +18,8 @@ const integrityMap = {};      // agent id -> real integrity level from getprivs 
 let activeInteractId = null;  // currently focused agent tab
 const taskStore = TaskStore.createTaskStore({ limit: 100 });
 let taskCenterFilter = 'all';
+const taskActions = new Map();
+const beaconPolls = new Map();
 
 // ── Persistence ─────────────────────────────────────────────────────────────
 // Operator notes, measured integrity, and graph layout survive disconnects and
@@ -1247,7 +1249,8 @@ async function dispatchCmd(kind, id, raw) {
     const target = tab.obj?.hostname || id.slice(0, 8);
     const localTask = taskStore.create({
       type: 'beacon-command', title: 'Beacon 命令', target, agentId: id,
-      status: 'queued', summary: '正在提交到 Teamserver',
+      status: 'queued', summary: '正在提交到 Teamserver', timeoutMs: 6 * 60 * 1000,
+      policy: '取得远程任务编号后可取消；主动轮询 6 分钟，超时后保留为等待状态。',
     });
     const r = await App().ExecuteBeaconCommandAsync(id, shellCmd).catch(error => ({ error }));
     if (r.error) {
@@ -1263,7 +1266,7 @@ async function dispatchCmd(kind, id, raw) {
       return;
     }
     if (r.taskId) {
-      taskStore.update(localTask.id, { status: 'waiting', remoteTaskId: r.taskId, summary: '已排队，等待信标回连' });
+      taskStore.update(localTask.id, { status: 'waiting', remoteTaskId: r.taskId, canCancel: true, summary: '已排队，等待信标回连' });
       appendOut(id, `[*] task ${r.taskId.slice(0,8)} queued — polling for result...`, 'pending');
       pollBeaconResult(id, r.taskId, localTask.id);
     } else {
@@ -1813,19 +1816,26 @@ async function dispatchCmd(kind, id, raw) {
 // It uses the task LIST to detect state (reliable), then fetches the full body
 // via GetBeaconTaskResult only once the task is completed.
 function pollBeaconResult(id, taskId, localTaskId, tries = 0) {
+  const existing = beaconPolls.get(localTaskId);
+  if (existing?.cancelled || taskStore.get(localTaskId)?.status === 'cancelled') return;
+  if (!existing) beaconPolls.set(localTaskId, { cancelled: false });
   if (tries > 120) {
-    taskStore.update(localTaskId, { status: 'waiting', summary: '仍在等待信标回连，请稍后复查' });
+    beaconPolls.delete(localTaskId);
+    taskStore.update(localTaskId, { status: 'waiting', summary: '主动轮询已超时，任务仍在 Teamserver 等待，可取消或稍后复查' });
     if (openTabs[id]) appendOut(id, `[*] task ${taskId.slice(0,8)} still pending — the beacon has not checked in yet (interval/jitter). Use 'tasks' to check later.`, 'pending');
     return;
   }
   setTimeout(async () => {
+    if (beaconPolls.get(localTaskId)?.cancelled || taskStore.get(localTaskId)?.status === 'cancelled') return;
     const tasks = await App().GetBeaconTasks(id).catch(() => null);
+    if (beaconPolls.get(localTaskId)?.cancelled || taskStore.get(localTaskId)?.status === 'cancelled') return;
     if (!tasks) { pollBeaconResult(id, taskId, localTaskId, tries + 1); return; }
     const t = tasks.find(x => x.id === taskId);
     if (!t) { pollBeaconResult(id, taskId, localTaskId, tries + 1); return; }
     if (t.state === 'completed') {
       const full = await App().GetBeaconTaskResult(taskId).catch(() => null);
-      taskStore.update(localTaskId, { status: 'success', summary: '命令已完成并返回结果' });
+      beaconPolls.delete(localTaskId);
+      taskStore.update(localTaskId, { status: 'success', canCancel: false, summary: '命令已完成并返回结果' });
       if (openTabs[id]) {
         appendOut(id, `[+] task ${taskId.slice(0,8)} completed`, 'ok');
         appendOut(id, (((full && full.response) || t.response) || '(no output)').trimEnd(), 'out');
@@ -1833,12 +1843,42 @@ function pollBeaconResult(id, taskId, localTaskId, tries = 0) {
     } else if (t.state === 'failed' || t.state === 'canceled') {
       const cancelled = t.state === 'canceled';
       const summary = cancelled ? '任务已取消' : 'Teamserver 报告任务失败';
-      taskStore.update(localTaskId, { status: cancelled ? 'cancelled' : 'failed', summary, error: summary });
+      beaconPolls.delete(localTaskId);
+      taskStore.update(localTaskId, { status: cancelled ? 'cancelled' : 'failed', canCancel: false, summary, error: summary });
       if (openTabs[id]) appendOut(id, `[error] task ${t.state}`, 'err');
     } else {
       pollBeaconResult(id, taskId, localTaskId, tries + 1);
     }
   }, 3000);
+}
+
+async function cancelTask(taskId) {
+  const task = taskStore.get(taskId);
+  if (!task?.canCancel || !task.remoteTaskId) return;
+  const confirmed = await uiConfirm(`取消“${esc(task.title)}”在 Teamserver 中的排队任务？`, {
+    title: '取消任务', okLabel: '取消任务', danger: true,
+  });
+  if (!confirmed) return;
+  taskStore.update(taskId, { canCancel: false, summary: '正在请求 Teamserver 取消任务' });
+  const error = await App().CancelBeaconTask(task.remoteTaskId).then(() => null).catch(error => error);
+  if (error) {
+    taskStore.update(taskId, { canCancel: true, summary: RpcErrors.safeRpcErrorMessage(error, '取消任务失败') });
+    toastRpcError(error, '取消任务失败');
+    return;
+  }
+  const poll = beaconPolls.get(taskId);
+  if (poll) poll.cancelled = true;
+  beaconPolls.delete(taskId);
+  taskStore.update(taskId, { status: 'cancelled', canCancel: false, summary: '已由操作员取消' });
+  toast('ok', '任务已取消');
+}
+
+async function retryTask(taskId) {
+  const task = taskStore.get(taskId);
+  const action = taskActions.get(taskId)?.retry;
+  if (!task?.canRetry || !action) return;
+  taskStore.update(taskId, { canRetry: false });
+  await action();
 }
 
 async function showTasks(id) {
@@ -2033,14 +2073,16 @@ function renderTaskCenter() {
     return;
   }
   list.innerHTML = `<div class="task-table-wrap"><table class="data-table task-table">
-    <thead><tr><th>状态</th><th>任务</th><th>目标</th><th>开始时间</th><th>耗时</th><th>结果摘要</th></tr></thead>
+    <thead><tr><th>状态</th><th>任务</th><th>目标</th><th>开始时间</th><th>耗时</th><th>结果摘要</th><th>操作</th></tr></thead>
     <tbody>${tasks.map(task => {
       const status = taskStatusMeta[task.status] || { label: task.status, cls: 'queued' };
       const remoteId = task.remoteTaskId ? `<div class="task-remote-id">${esc(task.remoteTaskId.slice(0, 12))}</div>` : '';
+      const policy = task.policy ? `<div class="task-policy" title="${esc(task.policy)}">${esc(task.policy)}</div>` : '';
+      const actions = `${task.canCancel ? `<button class="btn small danger" data-task-cancel="${esc(task.id)}">取消</button>` : ''}${task.canRetry ? `<button class="btn small" data-task-retry="${esc(task.id)}">重试</button>` : ''}` || '-';
       return `<tr><td><span class="task-status ${status.cls}">${status.label}</span></td>
         <td><strong>${esc(task.title)}</strong>${remoteId}</td><td>${esc(task.target)}</td>
         <td>${esc(formatTaskTime(task.startedAt))}</td><td>${esc(formatTaskDuration(task))}</td>
-        <td class="task-summary">${esc(task.summary || '-')}</td></tr>`;
+        <td class="task-summary">${esc(task.summary || '-')}${policy}</td><td class="task-actions">${actions}</td></tr>`;
     }).join('')}</tbody></table></div>`;
 }
 
@@ -2062,6 +2104,12 @@ function openTaskCenter() {
     renderTaskCenter();
   }));
   document.getElementById('task-clear-completed')?.addEventListener('click', () => taskStore.clearCompleted());
+  document.getElementById('task-center-list')?.addEventListener('click', event => {
+    const cancelButton = event.target.closest('[data-task-cancel]');
+    const retryButton = event.target.closest('[data-task-retry]');
+    if (cancelButton) cancelTask(cancelButton.dataset.taskCancel);
+    if (retryButton) retryTask(retryButton.dataset.taskRetry);
+  });
   renderTaskCenter();
 }
 taskStore.subscribe(renderTaskCenter);
@@ -2510,6 +2558,26 @@ function appendServer(text, cls) {
   const s = document.createElement('span'); s.className = cls || 'out'; s.textContent = text + '\n';
   o.appendChild(s); o.scrollTop = o.scrollHeight;
 }
+async function installArmoryPackage(packageName) {
+  const installTask = taskStore.create({
+    type: 'armory-install', title: '安装 Armory 包', target: packageName,
+    status: 'running', summary: '正在获取并安装软件包', timeoutMs: 120000,
+    policy: '网络请求最长等待 120 秒；失败后可重试；安装过程暂不支持取消。',
+  });
+  taskActions.set(installTask.id, { retry: () => installArmoryPackage(packageName) });
+  appendServer(`[*] 正在安装 ${packageName}...`, 'info');
+  const error = await App().ArmoryInstall(packageName).then(() => null).catch(error => error);
+  if (error) {
+    const message = rpcErrorMessage(error, 'Armory 安装失败');
+    const safeMessage = RpcErrors.safeRpcErrorMessage(error, 'Armory 安装失败');
+    taskStore.update(installTask.id, { status: 'failed', canRetry: true, summary: safeMessage, error: safeMessage });
+    appendServer(`[错误] ${message}`, 'err');
+    return;
+  }
+  taskActions.delete(installTask.id);
+  taskStore.update(installTask.id, { status: 'success', summary: '软件包安装完成' });
+  appendServer(`[成功] ${packageName} 已安装`, 'out');
+}
 async function runServerCmd(raw) {
   const parts = tok(raw), cmd = (parts[0]||'').toLowerCase(), args = parts.slice(1);
   appendServer(raw, 'cmd');
@@ -2587,21 +2655,7 @@ async function runServerCmd(raw) {
         const sub = (args[0]||'').toLowerCase();
         if (sub === 'install') {
           if (!args[1]) return appendServer('用法：armory install <包名>', 'err');
-          const packageName = args[1];
-          const installTask = taskStore.create({
-            type: 'armory-install', title: '安装 Armory 包', target: packageName,
-            status: 'running', summary: '正在获取并安装软件包',
-          });
-          appendServer(`[*] 正在安装 ${packageName}...`, 'info');
-          const error = await App().ArmoryInstall(packageName).then(() => null).catch(error => error);
-          if (error) {
-            const message = rpcErrorMessage(error, 'Armory 安装失败');
-            const safeMessage = RpcErrors.safeRpcErrorMessage(error, 'Armory 安装失败');
-            taskStore.update(installTask.id, { status: 'failed', summary: safeMessage, error: safeMessage });
-            return appendServer(`[错误] ${message}`, 'err');
-          }
-          taskStore.update(installTask.id, { status: 'success', summary: '软件包安装完成' });
-          return appendServer(`[成功] ${packageName} 已安装`, 'out');
+          return installArmoryPackage(args[1]);
         }
         if (sub === 'remove' || sub === 'rm') {
           if (!args[1]) return appendServer('用法：armory remove <包名>', 'err');
@@ -3035,6 +3089,7 @@ function openGeneratePanel() {
         type: 'implant-generate', title: '生成植入体',
         target: `${req.goos}/${req.goarch} · ${req.format}`,
         status: 'running', summary: 'Teamserver 正在构建植入体',
+        policy: '服务端构建不提供可靠取消；失败后请复核表单并重新提交，任务记录不会保存 C2 URL。',
       });
       const r = await App().GenerateImplant(req).catch(error => ({error}));
       document.getElementById('gen-status').style.display = 'none';

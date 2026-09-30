@@ -227,6 +227,9 @@ input::placeholder{color:var(--muted);}
 .task-table td{vertical-align:middle;}
 .task-table td strong{display:block;color:var(--text);font-size:12px;}
 .task-summary{min-width:180px;white-space:normal!important;line-height:1.4;}
+.task-policy{margin-top:4px;color:var(--muted);font-size:9.5px;line-height:1.35;}
+.task-actions{min-width:74px;white-space:nowrap!important;}
+.task-actions .btn+.btn{margin-left:4px;}
 .task-remote-id{margin-top:3px;color:var(--muted);font-family:var(--mono);font-size:9.5px;}
 .task-status{display:inline-block;min-width:58px;padding:3px 6px;border:1px solid currentColor;text-align:center;font-size:10px;font-weight:700;}
 .task-status.queued,.task-status.waiting{color:var(--cyan);background:rgba(56,188,203,.08);}
@@ -235,7 +238,7 @@ input::placeholder{color:var(--muted);}
 .task-status.failed{color:var(--accent);background:rgba(226,60,78,.08);}
 .task-status.cancelled{color:var(--muted);background:rgba(97,103,118,.08);}
 .task-empty{min-height:210px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--border);color:var(--muted);font-size:12px;}
-@media (max-width:720px){.task-toolbar{align-items:flex-start;flex-wrap:wrap}.task-toolbar .spacer{display:none}.task-table{min-width:760px}}
+@media (max-width:720px){.task-toolbar{align-items:flex-start;flex-wrap:wrap}.task-toolbar .spacer{display:none}.task-table{min-width:860px}}
 
 /* Context menu */
 .ctx-menu{position:fixed;background:var(--panel-elev);border:1px solid var(--border-hi);border-radius:8px;padding:4px;z-index:9999;box-shadow:0 12px 30px rgba(0,0,0,.6);min-width:160px;}
