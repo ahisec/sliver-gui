@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bishopfox/sliver/client/core"
 	"github.com/bishopfox/sliver/protobuf/commonpb"
@@ -56,9 +57,9 @@ type extCommand struct {
 // extManifest supports both the v2 (commands array) and v1 (single command at
 // the top level) manifest layouts.
 type extManifest struct {
-	Name        string       `json:"name"`
-	Version     string       `json:"version"`
-	Commands    []extCommand `json:"commands"`
+	Name     string       `json:"name"`
+	Version  string       `json:"version"`
+	Commands []extCommand `json:"commands"`
 	// v1 single-command fields:
 	CommandName string    `json:"command_name"`
 	Entrypoint  string    `json:"entrypoint"`
@@ -293,6 +294,15 @@ func packArgs(c *extCommand, args []string) ([]byte, error) {
 // RunExtension loads (if needed) and executes an installed extension command on
 // a session, returning its output. args are positional, in manifest order.
 func (a *App) RunExtension(sessionID, command string, args []string) (string, error) {
+	started := time.Now()
+	status := "failed"
+	defer func() {
+		summary := "执行失败"
+		if status == "success" {
+			summary = "执行完成"
+		}
+		a.recordExtensionExecution("extension", command, sessionID, status, summary, started)
+	}()
 	client, err := a.requireClient()
 	if err != nil {
 		return "", err
@@ -371,6 +381,7 @@ func (a *App) RunExtension(sessionID, command string, args []string) (string, er
 	if resp.Response != nil && resp.Response.Err != "" {
 		return "", fmt.Errorf("%s", resp.Response.Err)
 	}
+	status = "success"
 	return string(resp.Output), nil
 }
 

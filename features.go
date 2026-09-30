@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bishopfox/sliver/protobuf/clientpb"
 	"github.com/bishopfox/sliver/protobuf/commonpb"
@@ -1043,18 +1044,24 @@ func (a *App) RegisterWasmExtension(sessionID, name, wasmPath string) error {
 
 // ExecWasmExtension runs a registered WASM extension (non-interactive).
 func (a *App) ExecWasmExtension(sessionID, name string, args []string) ExecResult {
+	started := time.Now()
 	client, err := a.requireClient()
 	if err != nil {
+		a.recordExtensionExecution("wasm", name, sessionID, "failed", "执行失败", started)
 		return ExecResult{Error: err.Error()}
 	}
-	a.audit.log("wasm-exec", sessionID, name+" "+strings.Join(args, " "))
+	// Arguments may contain credentials or command text. Keep them out of the
+	// durable audit trail; the structured execution record stores no arguments.
+	a.audit.log("wasm-exec", sessionID, name)
 	resp, err := client.RPC.ExecWasmExtension(a.ctx, &sliverpb.ExecWasmExtensionReq{
 		Name:    name,
 		Args:    args,
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
 	if err != nil {
+		a.recordExtensionExecution("wasm", name, sessionID, "failed", "执行失败", started)
 		return ExecResult{Error: err.Error()}
 	}
+	a.recordExtensionExecution("wasm", name, sessionID, "success", "执行完成", started)
 	return ExecResult{Stdout: string(resp.Stdout), Stderr: string(resp.Stderr), Status: resp.ExitCode}
 }

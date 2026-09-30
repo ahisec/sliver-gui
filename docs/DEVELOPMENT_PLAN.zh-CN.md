@@ -243,12 +243,12 @@ C2 配置
 
 任务：
 
-- [ ] 展示已安装、可安装、版本、来源、平台和架构支持。
-- [ ] 支持安装、更新、卸载及进度展示。
-- [ ] 根据 Manifest 生成参数表单和命令预览。
-- [ ] 统一 Extension、BOF/COFF 和 WASM 执行记录。
-- [ ] 标记第三方来源、完整性信息和兼容性风险。
-- [ ] 增加 External Builder 状态和构建日志入口。
+- [x] 展示已安装、可安装、版本、来源、平台和架构支持。
+- [x] 支持安装、更新、卸载及进度展示。
+- [x] 根据 Manifest 生成参数表单和命令预览。
+- [x] 统一 Extension、BOF/COFF 和 WASM 执行记录。
+- [x] 标记第三方来源、完整性信息和兼容性风险。
+- [x] 增加 External Builder 状态和构建日志入口。
 
 完成标准：
 
@@ -286,18 +286,18 @@ C2 配置
 
 | 官网主题 | 当前判断 | 计划归属 | 说明 |
 |---|---|---|---|
-| Aliases and Extensions | 部分 | M5 | 已有扩展执行，需统一发现、参数和版本管理 |
+| Aliases and Extensions | 已有 | M5 | 已统一发现、Manifest 参数、平台、版本和执行记录 |
 | Anti-virus Evasion | 文档 | M3 | 只呈现上游已暴露的构建选项和风险说明 |
 | Architecture | 文档 | M0 | 作为兼容性和架构说明 |
-| Armory | 部分 | M5 | 已有安装/移除，缺少完整状态和更新体验 |
+| Armory | 已有 | M5 | 已有安装、更新、移除和进度；minisign 验证仍受客户端实现限制 |
 | Audit Log | 部分 | M6 | 已有本地审计日志，需统一时间线和脱敏 |
-| BOF and COFF Support | 部分 | M5 | 已有扩展通路，需核对参数、平台和结果展示 |
+| BOF and COFF Support | 已有 | M5 | 已按 Manifest 展示参数、平台、风险和执行结果 |
 | C2 Advanced Options | 部分 | M3 | 纳入结构化 C2 编辑器 |
 | Community Guides | 文档 | M0 | 维护外部链接，不复制内容 |
 | Compile from Source | 文档 | - | 属于安装/构建文档 |
 | Configuration Files | 部分 | M0 | 已支持操作员配置，需补充校验与安全说明 |
 | Cross-compiling Implants | 部分 | M3 | 与编译器、Builder 和平台预检整合 |
-| Cross-platform BOFs | 待评估 | M5 | 依赖上游版本和扩展 Manifest |
+| Cross-platform BOFs | 已有 | M5 | 根据扩展 Manifest 和目标平台匹配，实际支持取决于软件包资产 |
 | Cursed | 待评估 | M5 | 先核对 RPC 和上游客户端依赖，不单独复刻协议 |
 | Custom Clients | 文档 | M0 | 本项目本身即自定义客户端，记录接口约束 |
 | DNS C2 | 部分 | M3 | 已能启动 Listener/生成，需补齐高级配置与校验 |
@@ -305,7 +305,7 @@ C2 配置
 | Debugging | 文档 | M0 | 增加诊断包和安全过滤后的日志入口 |
 | Environment Variables | 文档 | - | Teamserver 启动环境不由 GUI 修改 |
 | Executable Metadata | 待评估 | M3 | 检查 protobuf 支持后加入 Implant Studio |
-| External Builders | 部分 | M5 | 已能列出，需状态、日志和构建关联 |
+| External Builders | 部分 | M5 | 已有状态和构建记录入口；当前上游 RPC 不提供实时日志 |
 | GPG Public Key | 文档 | - | 上游发布验证信息 |
 | Getting Started | 部分 | M3 | 以首次连接、Listener、Generate 工作流呈现 |
 | Go Archive Output | 待评估 | M3 | 根据生成格式和上游版本决定 |

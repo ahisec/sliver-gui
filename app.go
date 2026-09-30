@@ -33,12 +33,14 @@ type App struct {
 
 	// Advanced tunneling state (SOCKS5 + port forwarding).
 	// Guarded by advMu, NOT mu, so we never deadlock with requireClient().
-	advMu      sync.Mutex
-	socks      map[string]*socksProxyHandle // sessionID -> active socks proxy
-	portfwds   map[string][]*portfwdHandle  // sessionID -> active port forwards
-	shells     map[string]*shellHandle      // tunnelID -> interactive shell
-	transferMu sync.Mutex
-	transfers  map[string]context.CancelFunc
+	advMu            sync.Mutex
+	socks            map[string]*socksProxyHandle // sessionID -> active socks proxy
+	portfwds         map[string][]*portfwdHandle  // sessionID -> active port forwards
+	shells           map[string]*shellHandle      // tunnelID -> interactive shell
+	transferMu       sync.Mutex
+	transfers        map[string]context.CancelFunc
+	extensionMu      sync.Mutex
+	extensionRecords []ExtensionExecutionRecord
 
 	audit *auditLogger // operator action log (~/.sliver-gui/audit.log)
 }
@@ -112,6 +114,15 @@ func (a *App) PickPEMetadataFile() (string, error) {
 			{DisplayName: "Windows PE 文件 (*.exe;*.dll)", Pattern: "*.exe;*.dll"},
 			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
 		},
+	})
+}
+
+// PickWasmFile selects a local WASM module without exposing native-dialog
+// failures or cancellation as a process-level error.
+func (a *App) PickWasmFile() (string, error) {
+	return a.safeOpenFileDialog(runtime.OpenDialogOptions{
+		Title:   "选择 WASM 扩展",
+		Filters: []runtime.FileFilter{{DisplayName: "WebAssembly 模块 (*.wasm)", Pattern: "*.wasm"}},
 	})
 }
 

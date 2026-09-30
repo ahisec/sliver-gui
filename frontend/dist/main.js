@@ -2149,6 +2149,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
     if (view === 'report') exportReport();
     if (view === 'c2profiles') openC2ProfileEditor();
     if (view === 'infrastructure') openInfrastructurePanel();
+    if (view === 'extensions') openExtensionCenter();
   });
 });
 
@@ -2352,6 +2353,119 @@ async function stopInfrastructureRoute(route, nodes) {
     message: `确定停止 ${esc(INFRA_ROUTE_LABELS[route.type] || route.type)}（${esc(route.listen || route.id)}）吗？所属节点 ${esc(route.session || route.sessionId.slice(0,8))}${impacted ? ` 关联 ${impacted} 个下游节点，请确认影响范围。` : ' 无下游节点。'}`,
     action: calls[route.type], success: '网络路由已停止', refresh: openInfrastructurePanel,
   });
+}
+
+let extensionCenterState = { tab: 'installed', snapshot: null, armory: null, selectedCommand: '' };
+
+async function openExtensionCenter(tab = extensionCenterState.tab) {
+  extensionCenterState.tab = tab;
+  openViewPanel('_extensions', '扩展中心', '<div class="infra-loading"><span class="spinner"></span>正在读取本地扩展与 Builder 状态...</div>');
+  try { extensionCenterState.snapshot = await App().GetExtensionCenterSnapshot(); }
+  catch (error) { document.getElementById('modal-body').innerHTML = rpcErrorHtml(error, '加载扩展中心失败'); return; }
+  renderExtensionCenter();
+}
+
+function renderExtensionCenter() {
+  const state = extensionCenterState, snapshot = state.snapshot || { commands: [], builders: [], records: [], warnings: [] };
+  const tabs = [['installed','已安装'],['armory','Armory'],['execute','执行'],['wasm','WASM'],['builders','Builder']];
+  const warnings = (snapshot.warnings || []).map(value => `<div class="ext-risk">${esc(value)}</div>`).join('');
+  const html = `<div class="extension-center"><div class="ext-tabs">${tabs.map(([id,label]) => `<button class="ext-tab${state.tab === id ? ' active' : ''}" data-ext-tab="${id}">${label}</button>`).join('')}</div>${warnings}<div id="ext-content"></div></div>`;
+  openViewPanel('_extensions', '扩展中心', html);
+  document.querySelectorAll('[data-ext-tab]').forEach(button => button.addEventListener('click', () => { state.tab = button.dataset.extTab; renderExtensionCenter(); }));
+  const content = document.getElementById('ext-content');
+  if (state.tab === 'installed') renderInstalledExtensions(content, snapshot.commands || []);
+  if (state.tab === 'armory') renderArmory(content);
+  if (state.tab === 'execute') renderExtensionExecution(content, snapshot);
+  if (state.tab === 'wasm') renderWasmCenter(content, snapshot);
+  if (state.tab === 'builders') renderBuilderCenter(content, snapshot);
+}
+
+function renderInstalledExtensions(content, commands) {
+  content.innerHTML = `<div class="section-heading"><div><h3>本地已安装命令</h3><p>版本和平台来自 Manifest，哈希由客户端在本地计算。</p></div><span>${commands.length} 个命令</span></div><div class="ext-list">${commands.map(command => `<article class="ext-item"><div class="ext-item-main"><strong>${esc(command.command)}</strong><span class="tag">${command.kind === 'bof' ? 'BOF/COFF' : 'Extension'}</span><span>${esc(command.extension)} ${esc(command.version || '版本未知')}</span></div><p>${esc(command.help || '无说明')}</p><div class="ext-meta"><span>平台：${esc((command.platforms || []).join(', ') || '未声明')}</span><span>完整性：${esc(command.integrity)}${command.integritySha ? ` · ${esc(command.integritySha.slice(0,16))}...` : ''}</span></div><div class="ext-risk inline">${esc(command.risk)}</div><button class="btn small ext-run" data-command="${esc(command.command)}">执行</button></article>`).join('') || '<div class="empty-state">尚未安装可执行扩展</div>'}</div>`;
+  content.querySelectorAll('.ext-run').forEach(button => button.addEventListener('click', () => { extensionCenterState.selectedCommand = button.dataset.command; extensionCenterState.tab = 'execute'; renderExtensionCenter(); }));
+}
+
+async function renderArmory(content) {
+  if (!extensionCenterState.armory) {
+    content.innerHTML = '<div class="infra-loading"><span class="spinner"></span>正在读取 Armory 索引...</div>';
+    try { extensionCenterState.armory = await App().ArmoryList(); }
+    catch (error) { content.innerHTML = rpcErrorHtml(error, '加载 Armory 失败'); return; }
+  }
+  const packages = extensionCenterState.armory || [];
+  content.innerHTML = `<div class="section-heading"><div><h3>Armory 软件包</h3><p>来源为 sliverarmory GitHub 组织；当前完整性状态为“签名未验证”。</p></div><button class="btn small" id="armory-refresh">刷新索引</button></div><div class="ext-list">${packages.map(pkg => `<article class="ext-item"><div class="ext-item-main"><strong>${esc(pkg.name)}</strong><span class="tag">${pkg.type === 'alias' ? 'Alias' : 'Extension'}</span><span>${pkg.installed ? '已安装' : '可安装'}</span></div><p>${esc(pkg.description || '无说明')}</p><div class="ext-meta"><span>版本：${esc(pkg.version || '索引未提供')}</span><span>来源：${esc(pkg.url || 'sliverarmory')}</span><span>完整性：签名未验证</span><span>兼容性：安装时按本机平台选择资产</span></div><div class="ext-actions"><button class="btn small armory-install" data-name="${esc(pkg.name)}">${pkg.installed ? '更新 / 重装' : '安装'}</button>${pkg.installed ? `<button class="btn small danger armory-remove" data-name="${esc(pkg.name)}">卸载</button>` : ''}</div></article>`).join('') || '<div class="empty-state">Armory 索引中暂无软件包</div>'}</div>`;
+  document.getElementById('armory-refresh')?.addEventListener('click', () => { extensionCenterState.armory = null; renderArmory(content); });
+  content.querySelectorAll('.armory-install').forEach(button => button.addEventListener('click', async () => { await installArmoryPackage(button.dataset.name); extensionCenterState.armory = null; await openExtensionCenter('armory'); }));
+  content.querySelectorAll('.armory-remove').forEach(button => button.addEventListener('click', () => runDangerousAction({ title:'卸载扩展', message:`确定卸载“${esc(button.dataset.name)}”吗？`, okLabel:'卸载', action:()=>App().ArmoryRemove(button.dataset.name), success:'扩展已卸载', refresh:async()=>{ extensionCenterState.armory=null; await openExtensionCenter('armory'); } })));
+}
+
+function commandPreview(command, args) {
+  return `ext ${command.command}${args.length ? ' ' + args.map(value => value ? `<${value}>` : '<未填写>').join(' ') : ''}`;
+}
+
+function renderExtensionExecution(content, snapshot) {
+  const commands = snapshot.commands || [], sessions = allSessions.filter(session => !session.isDead);
+  const selected = commands.find(item => item.command === extensionCenterState.selectedCommand) || commands[0];
+  extensionCenterState.selectedCommand = selected?.command || '';
+  content.innerHTML = `<div class="ext-execute-layout"><div><label class="ext-label">Session<select id="ext-session">${sessions.map(session => `<option value="${esc(session.id)}">${esc(session.hostname || session.name || session.id.slice(0,8))} · ${esc(session.os)}/${esc(session.arch)}</option>`).join('') || '<option value="">无在线 Session</option>'}</select></label><label class="ext-label">命令<select id="ext-command">${commands.map(command => `<option value="${esc(command.command)}" ${command.command === selected?.command ? 'selected' : ''}>${esc(command.command)} · ${esc(command.kind)}</option>`).join('') || '<option value="">无已安装命令</option>'}</select></label><div id="ext-command-detail"></div></div><div><h3>执行记录</h3><div class="ext-records">${(snapshot.records || []).slice().reverse().map(record => `<div><strong>${esc(record.command)}</strong><span>${record.kind.toUpperCase()} · ${record.status === 'success' ? '成功' : '失败'} · ${new Date(record.finishedAt).toLocaleString()}</span><small>${esc(record.summary)}</small></div>`).join('') || '<div class="empty-state">暂无执行记录</div>'}</div></div></div>`;
+  const draw = () => {
+    const command = commands.find(item => item.command === document.getElementById('ext-command').value);
+    const detail = document.getElementById('ext-command-detail'); if (!command) { detail.innerHTML = '<div class="empty-state">请选择命令</div>'; return; }
+    const platform = (command.platforms || []).join(', ') || '未声明';
+    detail.innerHTML = `<div class="ext-command-head"><p>${esc(command.help || '无说明')}</p><span>兼容平台：${esc(platform)}</span></div><div class="ext-args">${(command.arguments || []).map((arg,index) => `<label>${esc(arg.name)} · ${esc(arg.type)}${arg.required ? ' *' : ''}<input data-ext-arg="${index}" type="${arg.type === 'int' || arg.type === 'integer' || arg.type === 'short' ? 'number' : 'text'}" placeholder="${esc(arg.help || arg.name)}"/></label>`).join('') || '<span class="muted">此命令没有参数</span>'}</div><div class="command-preview" id="ext-preview"></div><div class="ext-risk inline">${esc(command.risk)}</div><div class="ext-actions"><button class="btn accent" id="ext-execute" ${sessions.length ? '' : 'disabled'}>执行命令</button></div><pre class="ext-output hidden" id="ext-output"></pre>`;
+    const refreshPreview = () => { const names = [...detail.querySelectorAll('[data-ext-arg]')].map((input,index) => input.value ? command.arguments[index].name : command.arguments[index].name); document.getElementById('ext-preview').textContent = commandPreview(command, names); };
+    detail.querySelectorAll('[data-ext-arg]').forEach(input => input.addEventListener('input', refreshPreview)); refreshPreview();
+    document.getElementById('ext-execute')?.addEventListener('click', async () => {
+      const args = [...detail.querySelectorAll('[data-ext-arg]')].map(input => input.value);
+      const missing = (command.arguments || []).find((arg,index) => arg.required && !args[index]);
+      if (missing) return toast('err', `请填写必填参数：${missing.name}`);
+      const button = document.getElementById('ext-execute'); button.disabled = true;
+      try {
+        const output = await App().RunExtension(document.getElementById('ext-session').value, command.command, args);
+        const outputBox = document.getElementById('ext-output');
+        outputBox.textContent = output || '执行完成，无输出。'; outputBox.classList.remove('hidden');
+        toast('ok', '扩展执行完成'); button.disabled = false;
+      }
+      catch (error) { toastRpcError(error, '扩展执行失败'); button.disabled = false; }
+    });
+  };
+  document.getElementById('ext-command')?.addEventListener('change', event => { extensionCenterState.selectedCommand = event.target.value; draw(); }); draw();
+}
+
+function renderWasmCenter(content, snapshot) {
+  const sessions = allSessions.filter(session => !session.isDead);
+  content.innerHTML = `<div class="section-heading"><div><h3>WASM 扩展</h3><p>注册本地模块到选定 Session，并直接执行已注册模块。</p></div></div><div class="wasm-form"><label>Session<select id="wasm-session">${sessions.map(session => `<option value="${esc(session.id)}">${esc(session.hostname || session.id.slice(0,8))}</option>`).join('') || '<option value="">无在线 Session</option>'}</select></label><label>模块名称<input id="wasm-name" placeholder="可留空，默认使用文件名"/></label><label>本地文件<div class="file-picker"><input id="wasm-path" readonly placeholder="未选择"/><button class="btn small" id="wasm-pick">选择</button></div></label><div class="ext-actions"><button class="btn accent" id="wasm-register" disabled>注册模块</button><button class="btn small" id="wasm-list" ${sessions.length ? '' : 'disabled'}>刷新模块列表</button></div></div><div id="wasm-modules" class="ext-list"></div><pre class="ext-output hidden" id="wasm-output"></pre>`;
+  const path = document.getElementById('wasm-path'), register = document.getElementById('wasm-register');
+  document.getElementById('wasm-pick')?.addEventListener('click', async () => { const value = await App().PickWasmFile().catch(error => { toastRpcError(error, '选择 WASM 文件失败'); return ''; }); if (value) { path.value = value; register.disabled = !sessions.length; } });
+  document.getElementById('wasm-register')?.addEventListener('click', async () => { register.disabled = true; try { await App().RegisterWasmExtension(document.getElementById('wasm-session').value, document.getElementById('wasm-name').value, path.value); toast('ok','WASM 模块已注册'); await list(); } catch(error) { toastRpcError(error,'注册 WASM 失败'); register.disabled=false; } });
+  const list = async () => {
+    const box=document.getElementById('wasm-modules'), sid=document.getElementById('wasm-session').value; if(!sid)return;
+    box.innerHTML='<div class="infra-loading"><span class="spinner"></span>正在读取...</div>';
+    try {
+      const names=await App().ListWasmExtensions(sid);
+      box.innerHTML=(names||[]).map(name=>`<article class="ext-item"><div class="ext-item-main"><strong>${esc(name)}</strong><span class="tag">WASM</span></div><label class="ext-label">参数（按空格分隔）<input data-wasm-name="${esc(name)}" autocomplete="off" placeholder="arg1 arg2"/></label><div class="command-preview">wasm exec ${esc(name)} &lt;参数&gt;</div><button class="btn small wasm-execute" data-name="${esc(name)}">执行</button></article>`).join('')||'<div class="empty-state">该 Session 尚无已注册 WASM 模块</div>';
+      box.querySelectorAll('.wasm-execute').forEach((button, index) => button.addEventListener('click', async () => {
+        const input = box.querySelectorAll('[data-wasm-name]')[index];
+        const args = String(input?.value || '').trim().split(/\s+/).filter(Boolean);
+        button.disabled = true;
+        try {
+          const result = await App().ExecWasmExtension(sid, button.dataset.name, args);
+          if (result.error) throw new Error(result.error);
+          const output = document.getElementById('wasm-output');
+          output.textContent = [result.stdout, result.stderr].filter(Boolean).join('\n') || `执行完成，退出码 ${result.status ?? 0}。`;
+          output.classList.remove('hidden'); toast('ok','WASM 执行完成');
+          extensionCenterState.snapshot = await App().GetExtensionCenterSnapshot();
+        } catch(error) { toastRpcError(error,'WASM 执行失败'); }
+        finally { button.disabled = false; }
+      }));
+    } catch(error){box.innerHTML=rpcErrorHtml(error,'读取 WASM 列表失败');}
+  };
+  document.getElementById('wasm-list')?.addEventListener('click',list); document.getElementById('wasm-session')?.addEventListener('change',list); if(sessions.length)list();
+}
+
+function renderBuilderCenter(content, snapshot) {
+  const builders = snapshot.builders || [];
+  content.innerHTML = `<div class="section-heading"><div><h3>External Builder 状态</h3><p>状态来自 Teamserver Builders RPC。上游未暴露实时日志，构建结果请进入“构建记录”查看。</p></div><button class="btn small" id="builder-builds">打开构建记录</button></div><div class="ext-list">${builders.map(builder => `<article class="ext-item"><div class="ext-item-main"><strong>${esc(builder.name)}</strong><span class="state online">已注册</span></div><div class="ext-meta"><span>操作员：${esc(builder.operatorName || '-')}</span><span>平台：${esc(builder.goos)}/${esc(builder.goarch)}</span><span>模板：${esc(builder.templates || '-')}</span></div></article>`).join('') || '<div class="empty-state">当前没有注册的 External Builder</div>'}</div>`;
+  document.getElementById('builder-builds')?.addEventListener('click',openBuildsPanel);
 }
 
 const taskStatusMeta = {

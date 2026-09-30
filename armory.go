@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 )
+
+var armoryPackageNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // ─── Armory — Extension Package Manager ──────────────────────────────────────
 //
@@ -42,6 +45,7 @@ type ArmoryPackage struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	URL         string `json:"url"`
+	Version     string `json:"version"`
 	Stars       int    `json:"stars"`
 	Type        string `json:"type"` // "extension" or "alias"
 	Installed   bool   `json:"installed"`
@@ -58,8 +62,8 @@ type armoryGitHubRepo struct {
 
 // armoryGitHubRelease is a GitHub release.
 type armoryGitHubRelease struct {
-	TagName string               `json:"tag_name"`
-	Assets  []armoryGitHubAsset  `json:"assets"`
+	TagName string              `json:"tag_name"`
+	Assets  []armoryGitHubAsset `json:"assets"`
 }
 
 // armoryGitHubAsset is a release asset.
@@ -111,6 +115,7 @@ func (a *App) ArmoryList() ([]ArmoryPackage, error) {
 			Name:        r.Name,
 			Description: r.Description,
 			URL:         r.HTMLURL,
+			Version:     "索引未提供",
 			Stars:       r.Stars,
 			Type:        "extension",
 			Installed:   installed[r.Name],
@@ -126,8 +131,8 @@ func (a *App) ArmoryList() ([]ArmoryPackage, error) {
 
 // ArmoryInstall downloads and installs a package by name from the armory.
 func (a *App) ArmoryInstall(packageName string) error {
-	if packageName == "" {
-		return fmt.Errorf("package name is required")
+	if !armoryPackageNamePattern.MatchString(packageName) {
+		return fmt.Errorf("invalid package name")
 	}
 
 	client := &http.Client{Timeout: 120 * time.Second}
@@ -192,9 +197,10 @@ func (a *App) ArmoryInstall(packageName string) error {
 		return fmt.Errorf("asset download returned HTTP %d", dlResp.StatusCode)
 	}
 
-	// Step 4: Extract to the extensions directory
-	extDir := armoryExtDir()
-	installDir := filepath.Join(extDir, packageName)
+	// Step 4: Extract to the matching official client directory. The GitHub
+	// repository index has no package-kind field, so this follows the same
+	// conservative name heuristic used by ArmoryList.
+	installDir := armoryInstallDir(packageName)
 	if err := os.MkdirAll(installDir, 0755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
 	}
@@ -210,10 +216,10 @@ func (a *App) ArmoryInstall(packageName string) error {
 
 // ArmoryRemove uninstalls a package by deleting its directory.
 func (a *App) ArmoryRemove(packageName string) error {
-	if packageName == "" {
-		return fmt.Errorf("package name is required")
+	if !armoryPackageNamePattern.MatchString(packageName) {
+		return fmt.Errorf("invalid package name")
 	}
-	installDir := filepath.Join(armoryExtDir(), packageName)
+	installDir := armoryInstallDir(packageName)
 	if _, err := os.Stat(installDir); os.IsNotExist(err) {
 		return fmt.Errorf("package '%s' is not installed", packageName)
 	}
@@ -232,6 +238,14 @@ func armoryExtDir() string {
 func armoryAliasDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".sliver-client", "aliases")
+}
+
+func armoryInstallDir(packageName string) string {
+	root := armoryExtDir()
+	if strings.Contains(strings.ToLower(packageName), "alias") {
+		root = armoryAliasDir()
+	}
+	return filepath.Join(root, packageName)
 }
 
 // installedExtensionNames returns a set of already-installed extension names.
