@@ -141,6 +141,78 @@ func (a *App) FileBrowserDelete(sessionID, path string) error {
 	return err
 }
 
+func fileExecuteRequest(sessionID, path string, args []string, background bool) *sliverpb.ExecuteReq {
+	return &sliverpb.ExecuteReq{
+		Path:       path,
+		Args:       args,
+		Output:     !background,
+		Background: background,
+		Request:    &commonpb.Request{SessionID: sessionID},
+	}
+}
+
+func fileExecuteWindowsRequest(sessionID, path string, args []string, background, hideWindow bool) *sliverpb.ExecuteWindowsReq {
+	return &sliverpb.ExecuteWindowsReq{
+		Path:       path,
+		Args:       args,
+		Output:     !background,
+		Background: background,
+		HideWindow: hideWindow,
+		Request:    &commonpb.Request{SessionID: sessionID},
+	}
+}
+
+// FileBrowserExecute runs a selected remote file without wrapping it in a
+// shell. Background execution returns after process creation and does not
+// capture output, matching Sliver's execute --background behavior.
+func (a *App) FileBrowserExecute(sessionID, path string, args []string, background, hideWindow bool) ExecResult {
+	client, err := a.requireClient()
+	if err != nil {
+		return ExecResult{Error: err.Error()}
+	}
+	if strings.TrimSpace(path) == "" {
+		return ExecResult{Error: "program path is required"}
+	}
+
+	sessions, err := client.ListSessions(a.ctx)
+	if err != nil {
+		return ExecResult{Error: err.Error()}
+	}
+	sessionOS := ""
+	for _, session := range sessions {
+		if session.ID == sessionID {
+			sessionOS = session.OS
+			break
+		}
+	}
+	if sessionOS == "" {
+		return ExecResult{Error: "session not found"}
+	}
+
+	a.audit.log("file-execute", sessionID, fmt.Sprintf("%s (arguments=%d, background=%t, hide-window=%t)", path, len(args), background, hideWindow))
+	var resp *sliverpb.Execute
+	if strings.Contains(strings.ToLower(sessionOS), "windows") {
+		resp, err = client.RPC.ExecuteWindows(a.ctx, fileExecuteWindowsRequest(sessionID, path, args, background, hideWindow))
+	} else {
+		resp, err = client.RPC.Execute(a.ctx, fileExecuteRequest(sessionID, path, args, background))
+	}
+	if err != nil {
+		return ExecResult{Error: err.Error()}
+	}
+	if resp == nil {
+		return ExecResult{Error: "teamserver returned an empty execute response"}
+	}
+	if resp.Response != nil && resp.Response.Err != "" {
+		return ExecResult{Error: resp.Response.Err}
+	}
+	return ExecResult{
+		Stdout: decodeCommandOutput(resp.Stdout, sessionOS),
+		Stderr: decodeCommandOutput(resp.Stderr, sessionOS),
+		Status: resp.Status,
+		PID:    resp.Pid,
+	}
+}
+
 // ─── Process Browser ──────────────────────────────────────────────────────────
 
 type ProcessEntry struct {

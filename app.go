@@ -357,6 +357,7 @@ type ExecResult struct {
 	Stdout string `json:"stdout"`
 	Stderr string `json:"stderr"`
 	Status uint32 `json:"status"`
+	PID    uint32 `json:"pid,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
 

@@ -4415,12 +4415,108 @@ async function openFileBrowser(sessionID) {
     await renderDir(currentPath, false);
   }
 
+  function showFileExecutionResult(file, result) {
+    const ov = document.createElement('div');
+    ov.className = 'ui-dialog-overlay';
+    const stdout = result.stdout || '';
+    const stderr = result.stderr || '';
+    ov.innerHTML = `<div class="ui-dialog execute-file-dialog">
+      <div class="ui-dialog-title">运行结果</div>
+      <div class="execute-file-summary"><strong>${esc(file.name)}</strong><span>退出状态 ${Number(result.status || 0)}${result.pid ? ` · PID ${Number(result.pid)}` : ''}</span></div>
+      <div class="execute-output-grid">
+        <section><label>标准输出</label><pre>${esc(stdout || '（无输出）')}</pre></section>
+        <section><label>标准错误</label><pre class="${stderr ? 'has-error' : ''}">${esc(stderr || '（无输出）')}</pre></section>
+      </div>
+      <div class="ui-dialog-actions"><button class="btn small accent" data-dialog-close>关闭</button></div>
+    </div>`;
+    document.body.appendChild(ov);
+    const done = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = event => { if (event.key === 'Escape' || event.key === 'Enter') done(); };
+    ov.querySelector('[data-dialog-close]').addEventListener('click', done);
+    ov.addEventListener('click', event => { if (event.target === ov) done(); });
+    document.addEventListener('keydown', onKey);
+    ov.querySelector('[data-dialog-close]').focus();
+  }
+
+  function showFileExecuteDialog(file) {
+    const session = allSessions.find(item => item.id === sessionID);
+    const isWindows = (session?.os || '').toLowerCase().includes('windows');
+    const ov = document.createElement('div');
+    ov.className = 'ui-dialog-overlay';
+    ov.innerHTML = `<div class="ui-dialog execute-file-dialog">
+      <div class="ui-dialog-title">运行程序</div>
+      <form class="execute-file-form">
+        <label><span>程序路径</span><input type="text" value="${esc(file.path).replace(/"/g, '&quot;')}" readonly/></label>
+        <label><span>命令行参数</span><input name="arguments" type="text" autocomplete="off" placeholder='例如：--name "hello world" /silent'/><small>使用空格分隔参数；带空格的参数请放在引号内。</small></label>
+        <div class="execute-file-options">
+          <label class="check-label"><input name="background" type="checkbox"/> 后台运行</label>
+          ${isWindows ? '<label class="check-label"><input name="hideWindow" type="checkbox"/> 隐藏窗口</label>' : ''}
+        </div>
+        <div class="execute-file-note">后台运行只确认进程已创建，不会持续收集程序输出。</div>
+        <div class="execute-file-error" role="alert"></div>
+        <div class="ui-dialog-actions"><button type="button" class="btn small" data-dialog-cancel>取消</button><button type="submit" class="btn small accent" data-dialog-run>运行</button></div>
+      </form>
+    </div>`;
+    document.body.appendChild(ov);
+    const form = ov.querySelector('form');
+    const argsInput = form.elements.arguments;
+    const errorBox = ov.querySelector('.execute-file-error');
+    const runButton = ov.querySelector('[data-dialog-run]');
+    let running = false;
+    const close = () => {
+      if (running) return;
+      ov.remove();
+      document.removeEventListener('keydown', onKey);
+    };
+    const onKey = event => { if (event.key === 'Escape') close(); };
+    ov.querySelector('[data-dialog-cancel]').addEventListener('click', close);
+    ov.addEventListener('click', event => { if (event.target === ov) close(); });
+    document.addEventListener('keydown', onKey);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (running) return;
+      const parsed = ArgumentParser.parseArguments(argsInput.value);
+      if (parsed.error) {
+        errorBox.textContent = parsed.error;
+        argsInput.focus();
+        return;
+      }
+      errorBox.textContent = '';
+      running = true;
+      runButton.disabled = true;
+      runButton.textContent = form.elements.background.checked ? '正在启动...' : '正在运行...';
+      const result = await App().FileBrowserExecute(
+        sessionID,
+        file.path,
+        parsed.args,
+        form.elements.background.checked,
+        Boolean(form.elements.hideWindow?.checked),
+      ).catch(error => ({ error }));
+      running = false;
+      if (result?.error) {
+        const info = rpcError(result.error, '运行程序失败');
+        errorBox.textContent = info.detail ? `${info.message}：${info.detail}` : info.message;
+        runButton.disabled = false;
+        runButton.textContent = '运行';
+        return;
+      }
+      ov.remove();
+      document.removeEventListener('keydown', onKey);
+      if (form.elements.background.checked) {
+        toast('ok', `程序已在后台启动${result.pid ? `，PID ${result.pid}` : ''}`, 5000);
+      } else {
+        showFileExecutionResult(file, result || {});
+      }
+    });
+    argsInput.focus();
+  }
+
   function showFileContextMenu(event, file) {
     event.preventDefault();
     event.stopPropagation();
     const item = (action, label, danger = false) => `<button class="ctx-item${danger ? ' danger' : ''}" data-fb-action="${action}">${label}</button>`;
     ctxMenu.innerHTML = file
-      ? `<div class="ctx-agent"><strong>${esc(file.name)}</strong><span>${file.isDir ? '文件夹' : fileTypeLabel(file.name, false)}</span></div>${item('download', file.isDir ? '下载文件夹 (.tar.gz)' : '下载')}${item('upload', '上传到当前目录')}<div class="ctx-divider"></div>${item('delete', '删除', true)}`
+      ? `<div class="ctx-agent"><strong>${esc(file.name)}</strong><span>${file.isDir ? '文件夹' : fileTypeLabel(file.name, false)}</span></div>${file.isDir ? '' : item('execute', '运行程序')}${item('download', file.isDir ? '下载文件夹 (.tar.gz)' : '下载')}${item('upload', '上传到当前目录')}<div class="ctx-divider"></div>${item('delete', '删除', true)}`
       : `<div class="ctx-agent"><strong>${esc(currentPath)}</strong><span>当前目录</span></div>${item('upload', '上传文件')}`;
     ctxMenu.style.left = Math.max(8, Math.min(event.clientX, window.innerWidth - 230)) + 'px';
     ctxMenu.style.top = Math.max(8, Math.min(event.clientY, window.innerHeight - 180)) + 'px';
@@ -4431,6 +4527,7 @@ async function openFileBrowser(sessionID) {
       const action = button.dataset.fbAction;
       if (action === 'upload') return uploadToCurrentDirectory();
       if (!file) return;
+      if (action === 'execute' && !file.isDir) return showFileExecuteDialog(file);
       if (action === 'download') {
         const result = await runFileTransfer('download', sessionID, file.path);
         if (result?.error) toastRpcError(result.error, file.isDir ? '下载文件夹失败' : '下载文件失败');
