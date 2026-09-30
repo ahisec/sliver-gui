@@ -102,6 +102,19 @@ func (a *App) PickConfigFile() (string, error) {
 	})
 }
 
+// PickPEMetadataFile selects an optional Windows PE donor for executable
+// metadata cloning. The path remains local and is never written to task or
+// audit summaries.
+func (a *App) PickPEMetadataFile() (string, error) {
+	return a.safeOpenFileDialog(runtime.OpenDialogOptions{
+		Title: "选择 PE 元数据参考文件",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Windows PE 文件 (*.exe;*.dll)", Pattern: "*.exe;*.dll"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	})
+}
+
 type ConnectResult struct {
 	Connected    bool   `json:"connected"`
 	OperatorName string `json:"operatorName"`

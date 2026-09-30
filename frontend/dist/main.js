@@ -2916,27 +2916,76 @@ function openLootPanel() {
   refreshLootList();
 }
 
-// HTTP C2 profile editor — load the profile as JSON, edit, save back.
+// HTTP C2 profile editor. Advanced JSON remains the source of truth; the basic
+// form only merges fields it owns so unknown server options are preserved.
 async function openC2Editor(name) {
   openViewPanel('_c2edit', `HTTP C2 配置档案${name ? ' — ' + name : ''}`,
-    `<div style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0">
-       <p style="color:var(--muted);font-size:11px;margin:0">在下方编辑配置档案 JSON。若要克隆，请修改 <code>"name"</code> 字段并点击<b>另存为新档案</b>。格式错误的 JSON 会被团队服务器拒绝。</p>
-       <textarea id="c2-json" class="notes-area" style="flex:1;min-height:260px;font-family:var(--mono);font-size:11px;line-height:1.5" spellcheck="false">正在加载...</textarea>
+    `<div class="studio-stack">
+       <div class="segmented" role="tablist"><button class="active" data-c2-mode="basic">常用设置</button><button data-c2-mode="json">高级 JSON</button></div>
+       <div id="c2-basic" class="studio-section">
+         <div class="gen-row"><div class="gen-field"><label>档案名称</label><input id="c2-name"/></div><div class="gen-field"><label>User-Agent</label><input id="c2-ua"/></div></div>
+         <div class="gen-row"><div class="gen-field"><label>Chrome 基准版本</label><input id="c2-chrome" type="number" min="0"/></div><div class="gen-field"><label>macOS 版本</label><input id="c2-macos"/></div></div>
+         <div class="gen-row"><div class="gen-field"><label>文件名长度（最小 / 最大）</label><div class="inline-pair"><input id="c2-minfile" type="number" min="0"/><input id="c2-maxfile" type="number" min="0"/></div></div><div class="gen-field"><label>路径长度（最小 / 最大）</label><div class="inline-pair"><input id="c2-minpath" type="number" min="0"/><input id="c2-maxpath" type="number" min="0"/></div></div></div>
+         <div class="gen-row"><div class="gen-field"><label>扩展名（逗号分隔）</label><input id="c2-ext" placeholder="php, html"/></div><label class="check-label"><input id="c2-random-version" type="checkbox"/> 随机版本响应头</label></div>
+         <p class="field-note">请求头、Cookie、路径段及未知字段保留在高级 JSON 中，不会因编辑常用设置而丢失。</p>
+       </div>
+       <textarea id="c2-json" class="notes-area hidden" style="flex:1;min-height:300px;font-family:var(--mono);font-size:11px;line-height:1.5" spellcheck="false">正在加载...</textarea>
        <div style="display:flex;gap:8px;align-items:center">
+         <button id="c2-validate" class="btn">校验 JSON</button>
          <button id="c2-save" class="btn accent">保存（覆盖）</button>
          <button id="c2-savenew" class="btn">另存为新档案</button>
          <span id="c2-status" style="font-size:11px;color:var(--muted)"></span>
        </div>
      </div>`);
   const ta = document.getElementById('c2-json'), status = document.getElementById('c2-status');
-  if (name) {
-    try { ta.value = await App().GetHTTPC2Profile(name); }
-    catch (e) { ta.value = ''; status.textContent = rpcErrorMessage(e, '加载配置档案失败'); }
-  } else {
-    ta.value = '';
-    ta.placeholder = '粘贴 HTTP C2 配置档案 JSON（可先通过“c2profile <name>”复制一个作为起点）。';
-  }
+  const basic = document.getElementById('c2-basic');
+  const parse = () => { try { return JSON.parse(ta.value || '{}'); } catch { return null; } };
+  const fillBasic = cfg => {
+    const implant = cfg?.implantConfig || {}, server = cfg?.serverConfig || {};
+    document.getElementById('c2-name').value = cfg?.name || '';
+    document.getElementById('c2-ua').value = implant.userAgent || '';
+    document.getElementById('c2-chrome').value = implant.chromeBaseVersion || 0;
+    document.getElementById('c2-macos').value = implant.macOSVersion || '';
+    document.getElementById('c2-minfile').value = implant.minFileGen || 0;
+    document.getElementById('c2-maxfile').value = implant.maxFileGen || 0;
+    document.getElementById('c2-minpath').value = implant.minPathLength || 0;
+    document.getElementById('c2-maxpath').value = implant.maxPathLength || 0;
+    document.getElementById('c2-ext').value = (implant.extensions || []).join(', ');
+    document.getElementById('c2-random-version').checked = !!server.randomVersionHeaders;
+  };
+  const mergeBasic = () => {
+    const cfg = parse(); if (!cfg) throw new Error('JSON 格式无效，请先修正高级 JSON');
+    cfg.name = document.getElementById('c2-name').value.trim();
+    cfg.serverConfig ||= {}; cfg.implantConfig ||= {};
+    cfg.serverConfig.randomVersionHeaders = document.getElementById('c2-random-version').checked;
+    Object.assign(cfg.implantConfig, {
+      userAgent: document.getElementById('c2-ua').value,
+      chromeBaseVersion: parseInt(document.getElementById('c2-chrome').value) || 0,
+      macOSVersion: document.getElementById('c2-macos').value,
+      minFileGen: parseInt(document.getElementById('c2-minfile').value) || 0,
+      maxFileGen: parseInt(document.getElementById('c2-maxfile').value) || 0,
+      minPathLength: parseInt(document.getElementById('c2-minpath').value) || 0,
+      maxPathLength: parseInt(document.getElementById('c2-maxpath').value) || 0,
+      extensions: document.getElementById('c2-ext').value.split(',').map(v=>v.trim()).filter(Boolean),
+    });
+    ta.value = JSON.stringify(cfg, null, 2); return cfg;
+  };
+  if (name) { try { ta.value = await App().GetHTTPC2Profile(name); } catch (e) { ta.value = '{}'; status.textContent = rpcErrorMessage(e, '加载配置档案失败'); } }
+  else ta.value = JSON.stringify({name:'',serverConfig:{randomVersionHeaders:true},implantConfig:{extensions:[]}}, null, 2);
+  fillBasic(parse());
+  document.querySelectorAll('[data-c2-mode]').forEach(btn => btn.addEventListener('click', () => {
+    try {
+      if (btn.dataset.c2Mode === 'json') mergeBasic(); else fillBasic(parse());
+      document.querySelectorAll('[data-c2-mode]').forEach(b=>b.classList.toggle('active', b===btn));
+      basic.classList.toggle('hidden', btn.dataset.c2Mode !== 'basic'); ta.classList.toggle('hidden', btn.dataset.c2Mode !== 'json'); status.textContent = '';
+    } catch(e) { status.textContent = e.message; }
+  }));
+  document.getElementById('c2-validate').addEventListener('click', () => {
+    try { mergeBasic(); JSON.parse(ta.value); status.textContent = 'JSON 格式正确'; status.style.color='var(--ok)'; }
+    catch(e) { status.textContent=e.message; status.style.color='var(--danger)'; }
+  });
   const save = async overwrite => {
+    try { mergeBasic(); } catch(e) { status.textContent=e.message; return; }
     if (!ta.value.trim()) { status.textContent = '没有可保存的内容'; return; }
     status.textContent = '正在保存...';
     try { await App().SaveHTTPC2Profile(ta.value, overwrite); status.textContent = '✓ 已保存'; toast('ok', 'HTTP C2 配置档案已保存'); }
@@ -3017,7 +3066,7 @@ async function refreshBuildsList() {
   const el = document.getElementById('builds-list'); if (!el) return;
   const builds = await App().GetBuildHistory().catch(() => []);
   if (!builds?.length) { el.innerHTML = '<div style="padding:10px;color:var(--muted)">暂无构建记录。</div>'; return; }
-  el.innerHTML = builds.map(b => `<div style="padding:4px 10px;font-size:12.5px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1">${esc(b.name)}</span><span style="color:var(--muted)">${esc(b.goos)}/${esc(b.goarch)}</span><span style="color:var(--muted)">${esc(b.format)}</span><span style="color:var(--muted);font-family:var(--mono);max-width:180px;overflow:hidden;text-overflow:ellipsis">${esc((b.c2Urls||[]).join(','))}</span><button class="btn small" onclick="buildRegen('${esc(b.name)}')">下载</button><button class="btn small danger" onclick="deleteBuild('${esc(b.name)}')">删除</button></div>`).join('');
+  el.innerHTML = `<table class="data-table"><thead><tr><th>名称</th><th>目标</th><th>模式 / 格式</th><th>HTTP C2</th><th>Encoder</th><th></th></tr></thead><tbody>${builds.map(b => `<tr><td><strong>${esc(b.name)}</strong></td><td>${esc(b.goos)}/${esc(b.goarch)}</td><td>${b.beacon?'Beacon':'Session'} · ${esc(b.format)}</td><td>${esc(b.httpC2Profile||'—')}</td><td>${esc((b.trafficEncoders||[]).join(', ')||'—')}</td><td><button class="btn small" onclick="buildRegen('${esc(b.name)}')">下载</button> <button class="btn small danger" onclick="deleteBuild('${esc(b.name)}')">删除</button></td></tr>`).join('')}</tbody></table>`;
 }
 async function deleteBuild(name) {
   if (!(await uiConfirm(`确定删除构建 ${esc(name)} 吗？`, { title: '删除构建', okLabel: '删除', danger: true }))) return;
@@ -3133,31 +3182,38 @@ function genFromProfile(p) {
 function openListenersPanel() {
   const content = `<div class="listener-layout">
     <div class="panel"><h3>启动监听器</h3>
-      <div class="field-row"><label>类型</label><select id="ls-type"><option value="mtls">mTLS</option><option value="http">HTTP</option><option value="https">HTTPS</option><option value="dns">DNS</option></select></div>
-      <div class="field-row"><label>主机</label><input id="ls-host" value="0.0.0.0"/></div>
-      <div class="field-row"><label>端口</label><input id="ls-port" type="number" value="8443"/></div>
+      <div class="field-row"><label>类型</label><select id="ls-type"><option value="mtls">mTLS</option><option value="http">HTTP</option><option value="https">HTTPS</option><option value="dns">DNS</option><option value="wg">WireGuard</option></select></div>
+      <div id="ls-fields"></div>
       <button class="btn accent" id="ls-start" style="width:100%;margin-top:6px">启动</button>
       <div id="ls-msg" class="status-msg"></div>
     </div>
-    <div class="panel"><h3>活动监听器</h3><div id="ls-list"></div></div>
+    <div class="panel"><h3>活动监听器</h3><div id="ls-list" class="table-wrap"></div></div>
   </div>`;
   openViewPanel('_listeners', '监听器', content);
   setTimeout(wireListeners, 0);
 }
 async function wireListeners() {
   const startBtn = document.getElementById('ls-start'); if (!startBtn) return;
+  const typeEl = document.getElementById('ls-type'), fields = document.getElementById('ls-fields');
+  const renderFields = () => {
+    const type = typeEl.value, defaults={mtls:8888,http:80,https:443,dns:53,wg:51820};
+    if (type==='dns') fields.innerHTML=`<div class="field-row"><label>域名</label><input id="ls-domains" placeholder="c2.example.com, alt.example.com"/></div><div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>端口</label><input id="ls-port" type="number" value="53"/></div><label class="check-label"><input id="ls-otp" type="checkbox"/> 强制 OTP</label><label class="check-label"><input id="ls-canaries" type="checkbox"/> 启用 Canary</label>`;
+    else if(type==='wg') fields.innerHTML=`<div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>UDP 端口</label><input id="ls-port" type="number" value="51820"/></div><div class="field-row"><label>隧道 IP</label><input id="ls-tun" value="100.64.0.1"/></div><div class="field-row"><label>TCP 通信端口</label><input id="ls-nport" type="number" value="8888"/></div><div class="field-row"><label>密钥交换端口</label><input id="ls-keyport" type="number" value="1337"/></div>`;
+    else fields.innerHTML=`<div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>端口</label><input id="ls-port" type="number" value="${defaults[type]}"/></div>${type==='http'||type==='https'?`<div class="field-row"><label>公开域名</label><input id="ls-domain" placeholder="可选"/></div><div class="field-row"><label>网站</label><input id="ls-website" placeholder="可选"/></div><div class="field-row"><label>长轮询超时 / 抖动</label><div class="inline-pair"><input id="ls-poll" type="number" min="0" value="0"/><input id="ls-jitter" type="number" min="0" value="0"/></div></div><label class="check-label"><input id="ls-otp" type="checkbox"/> 强制 OTP</label>${type==='https'?'<label class="check-label"><input id="ls-acme" type="checkbox"/> 使用 ACME</label><label class="check-label"><input id="ls-jarm" type="checkbox"/> 随机化 JARM</label>':''}`:''}`;
+  };
+  typeEl.addEventListener('change', renderFields); renderFields();
   startBtn.addEventListener('click', async () => {
-    const type = document.getElementById('ls-type').value;
+    const type = typeEl.value;
     const host = document.getElementById('ls-host').value.trim()||'0.0.0.0';
-    const port = parseInt(document.getElementById('ls-port').value)||8443;
+    const port = parseInt(document.getElementById('ls-port').value)||0;
     const msg = document.getElementById('ls-msg');
     msg.textContent = '正在启动...'; msg.className = 'status-msg';
     try {
       if (type==='mtls') await App().StartMTLSListener({host,port});
-      else if (type==='https') await App().StartHTTPListener({host,port,secure:true});
-      else if (type==='http') await App().StartHTTPListener({host,port,secure:false});
-      else if (type==='dns') await App().StartDNSListener({domains:[host]});
-      msg.textContent = `${type.toUpperCase()} 已在 :${port} 启动`; msg.className = 'status-msg ok';
+      else if (type==='https'||type==='http') await App().StartHTTPListener({host,port,secure:type==='https',domain:document.getElementById('ls-domain').value.trim(),website:document.getElementById('ls-website').value.trim(),acme:!!document.getElementById('ls-acme')?.checked,enforceOtp:document.getElementById('ls-otp').checked,longPollTimeout:parseInt(document.getElementById('ls-poll').value)||0,longPollJitter:parseInt(document.getElementById('ls-jitter').value)||0,randomizeJarm:!!document.getElementById('ls-jarm')?.checked});
+      else if (type==='dns') await App().StartDNSListener({domains:document.getElementById('ls-domains').value.split(',').map(v=>v.trim()).filter(Boolean),host,port,canaries:document.getElementById('ls-canaries').checked,enforceOtp:document.getElementById('ls-otp').checked});
+      else if(type==='wg') await App().StartWGListener({host,port,tunIp:document.getElementById('ls-tun').value.trim(),nPort:parseInt(document.getElementById('ls-nport').value)||0,keyPort:parseInt(document.getElementById('ls-keyport').value)||0});
+      msg.textContent = `${type.toUpperCase()} 已启动`; msg.className = 'status-msg ok';
     } catch(e) { msg.textContent = rpcErrorMessage(e, '启动监听器失败'); msg.className = 'status-msg err'; }
     refreshListenerList();
   });
@@ -3167,7 +3223,7 @@ async function refreshListenerList() {
   const el = document.getElementById('ls-list'); if (!el) return;
   const jobs = await App().ListJobs().catch(() => []);
   if (!jobs?.length) { el.innerHTML = '<div style="color:var(--muted);font-size:12px">暂无活动监听器</div>'; return; }
-  el.innerHTML = jobs.map(j => `<div style="padding:4px 0;font-size:12.5px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)"><span>${esc(j.name)} (${esc(j.protocol)} :${j.port})</span><button class="btn small danger" onclick="stopListener(${j.id}, '${esc(j.name)}')">终止</button></div>`).join('');
+  el.innerHTML = `<table class="data-table"><thead><tr><th>状态</th><th>名称 / 协议</th><th>地址</th><th>Job</th><th>C2 档案</th><th></th></tr></thead><tbody>${jobs.map(j => `<tr><td><span class="status-dot online"></span>运行中</td><td><strong>${esc(j.name)}</strong> · ${esc(j.protocol)}</td><td>${esc(j.address||(':'+j.port))}</td><td>#${j.id}</td><td>${esc(j.profileName||'—')}</td><td><button class="btn small danger" onclick="stopListener(${j.id}, '${esc(j.name)}')">终止</button></td></tr>`).join('')}</tbody></table>`;
 }
 function stopListener(id, name) {
   return runDangerousAction({ title:'终止监听器', message:`确定终止监听器“${esc(name)}”（Job ${id}）吗？`, okLabel:'终止', action:()=>App().KillJob(id), success:'监听器已终止', refresh:refreshListenerList });
@@ -3175,7 +3231,9 @@ function stopListener(id, name) {
 
 function openGeneratePanel() {
   const content = `<form id="gen-form" class="gen-form">
+    <div class="studio-heading"><div><strong>Implant Studio</strong><span>生成前先校验 Teamserver 编译器、Listener 与依赖</span></div><button type="button" class="btn small" id="gen-builds">构建历史</button></div>
     <div class="gen-row">
+      <div class="gen-field"><label>配置档案</label><select id="gen-profile"><option value="">自定义配置</option></select></div>
       <div class="gen-field"><label>名称（可选）</label><input name="name" placeholder="自动生成"/></div>
       <div class="gen-field"><label>格式</label><select name="format"><option value="exe">可执行文件</option><option value="shared">共享库</option><option value="service">服务</option><option value="shellcode">Shellcode</option></select></div>
     </div>
@@ -3185,6 +3243,8 @@ function openGeneratePanel() {
     </div>
     <div class="gen-row"><div class="gen-field" style="flex:2"><label>使用监听器</label><select id="gen-listener"><option value="">- 选择活动监听器 -</option></select></div></div>
     <div class="gen-row"><div class="gen-field" style="flex:2"><label>C2 URL</label><input name="c2Url" placeholder="mtls://ip:port or https://ip:port" required/></div></div>
+    <div class="gen-row"><div class="gen-field"><label>HTTP C2 档案</label><select name="httpC2Profile"><option value="">自动选择</option></select></div><div class="gen-field"><label>连接策略</label><select name="connectionStrategy"><option value="">默认</option><option value="s">顺序</option><option value="r">随机</option><option value="rd">随机域名</option></select></div></div>
+    <div class="gen-row"><div class="gen-field"><label>流量编码器</label><select name="trafficEncoder"><option value="">不使用</option></select></div><div class="gen-field"><label>重连间隔（秒）</label><input name="reconnectInterval" type="number" min="0" value="60"/></div><div class="gen-field"><label>最大连接错误</label><input name="maxConnectionErrors" type="number" min="0" value="1000"/></div></div>
     <div class="gen-row">
       <label class="check-label"><input type="checkbox" name="debug"/> 调试模式</label>
       <label class="check-label"><input type="checkbox" name="beacon" id="gbeacon"/> 信标模式</label>
@@ -3193,7 +3253,9 @@ function openGeneratePanel() {
       <div class="gen-field"><label>间隔（秒）</label><input name="interval" type="number" value="60"/></div>
       <div class="gen-field"><label>抖动（秒）</label><input name="jitter" type="number" value="30"/></div>
     </div>
-    <button type="submit" class="btn accent">生成</button>
+    <div class="gen-row" id="gen-metadata-row"><div class="gen-field"><label>Windows PE 元数据参考文件（可选）</label><div class="file-picker"><input name="metadataPath" readonly placeholder="未选择"/><button type="button" class="btn" id="gen-pick-metadata">选择</button><button type="button" class="icon-btn" id="gen-clear-metadata" title="清除">×</button></div><span class="field-note">仅支持 Windows PE 输出，任务和审计摘要只显示文件名。</span></div></div>
+    <div class="studio-actions"><button type="button" class="btn" id="gen-preflight">执行预检</button><button type="submit" class="btn accent" id="gen-submit" disabled>生成</button></div>
+    <div id="gen-preflight-result" class="preflight-box"><span>修改配置后执行预检。</span></div>
     <div id="gen-status" class="gen-status" style="display:none"><div class="spinner"></div><span>正在构建...</span></div>
     <div id="gen-result" class="result-box"></div>
   </form>`;
@@ -3202,6 +3264,19 @@ function openGeneratePanel() {
     document.getElementById('gbeacon')?.addEventListener('change', function() {
       document.getElementById('gbeacon-opts').style.display = this.checked ? 'flex' : 'none';
     });
+    document.getElementById('gen-builds').addEventListener('click', openBuildsPanel);
+    const f = document.getElementById('gen-form'), submit = document.getElementById('gen-submit');
+    const readReq = () => ({name:f.name.value,goos:f.goos.value,goarch:f.goarch.value,format:f.format.value,c2Url:f.c2Url.value,debug:f.debug.checked,beacon:f.beacon.checked,interval:parseInt(f.interval?.value)||60,jitter:parseInt(f.jitter?.value)||0,httpC2Profile:f.httpC2Profile.value,connectionStrategy:f.connectionStrategy.value,reconnectInterval:parseInt(f.reconnectInterval.value)||0,maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0,pollTimeout:0,trafficEncoders:f.trafficEncoder.value?[f.trafficEncoder.value]:[],metadataPath:f.metadataPath.value});
+    const invalidate = () => { submit.disabled=true; document.getElementById('gen-preflight-result').innerHTML='<span>配置已变化，请重新执行预检。</span>'; };
+    f.addEventListener('input', invalidate); f.addEventListener('change', invalidate);
+    document.getElementById('gen-pick-metadata').addEventListener('click', async()=>{ const path=await App().PickPEMetadataFile().catch(()=> ''); if(path){f.metadataPath.value=path;invalidate();} });
+    document.getElementById('gen-clear-metadata').addEventListener('click',()=>{f.metadataPath.value='';invalidate();});
+    const [profiles,httpProfiles,encoders] = await Promise.all([App().ListImplantProfiles().catch(()=>[]),App().ListC2Profiles().catch(()=>[]),App().ListTrafficEncoders().catch(()=>[])]);
+    const profileSel=document.getElementById('gen-profile'); profileSel.innerHTML='<option value="">自定义配置</option>'+profiles.map((p,i)=>`<option value="${i}">${esc(p.name)}</option>`).join('');
+    f.httpC2Profile.innerHTML='<option value="">自动选择</option>'+httpProfiles.map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+    f.trafficEncoder.innerHTML='<option value="">不使用</option>'+encoders.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    profileSel.addEventListener('change',()=>{const p=profiles[parseInt(profileSel.value)];if(!p)return;Object.entries({goos:p.goos,goarch:p.goarch,format:p.format?.toLowerCase().replace('executable','exe').replace('shared_lib','shared'),c2Url:p.c2Url,httpC2Profile:p.httpC2Profile,connectionStrategy:p.connectionStrategy,reconnectInterval:p.reconnectInterval,maxConnectionErrors:p.maxConnectionErrors}).forEach(([k,v])=>{if(v!==undefined&&v!==null&&f[k])f[k].value=v;});f.debug.checked=!!p.debug;f.beacon.checked=!!p.beacon;document.getElementById('gbeacon-opts').style.display=p.beacon?'flex':'none';if(p.interval)f.interval.value=p.interval;if(p.jitter>=0)f.jitter.value=p.jitter;invalidate();});
+    document.getElementById('gen-preflight').addEventListener('click',async()=>{const box=document.getElementById('gen-preflight-result');box.innerHTML='<span>正在检查依赖...</span>';const r=await App().PreflightImplant(readReq()).catch(error=>({error}));if(r.error){box.innerHTML=rpcErrorHtml(r.error,'预检失败');submit.disabled=true;return;}const issues=[...(r.errors||[]).map(v=>`<li class="err">${esc(v)}</li>`),...(r.warnings||[]).map(v=>`<li class="warn">${esc(v)}</li>`)];box.innerHTML=`<strong>${r.valid?'预检通过':'预检未通过'}</strong><ul>${(r.effectiveSummary||[]).map(v=>`<li>${esc(v)}</li>`).join('')}${issues.join('')}</ul>${r.availableBuilders?.length?`<span>可用外部 Builder：${esc(r.availableBuilders.join(', '))}</span>`:''}`;submit.disabled=!r.valid;});
     // Populate "From Listener" dropdown; auto-fill C2 URL from the first one.
     const sel = document.getElementById('gen-listener');
     const c2 = document.querySelector('#gen-form [name="c2Url"]');
@@ -3213,9 +3288,9 @@ function openGeneratePanel() {
       if (urls.length && c2 && !c2.value.trim()) { sel.value = urls[0]; c2.value = urls[0]; }
       sel.addEventListener('change', () => { if (sel.value && c2) c2.value = sel.value; });
     }
-    document.getElementById('gen-form')?.addEventListener('submit', async e => {
+    f.addEventListener('submit', async e => {
       e.preventDefault(); const f = e.target;
-      const req = { name:f.name.value, goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2Url:f.c2Url.value, debug:f.debug.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0 };
+      const req = readReq(); submit.disabled=true;
       document.getElementById('gen-status').style.display = 'flex';
       document.getElementById('gen-result').textContent = '';
       const generationTask = taskStore.create({
@@ -3237,6 +3312,7 @@ function openGeneratePanel() {
         taskStore.update(generationTask.id, { status: 'success', summary: `已创建构建：${r.name || r.file || '未命名构建'}` });
         res.style.color = 'var(--ok)';
         res.innerHTML = `<span>[成功] 已创建构建：${esc(r.name || r.file)}</span> <button class="btn small" style="margin-left:10px" onclick="buildRegen('${esc(r.name || r.file)}')">⬇ 保存到磁盘</button>`;
+        refreshBuildsList();
         // Auto-trigger the native save dialog immediately
         buildRegen(r.name || r.file);
       }

@@ -208,12 +208,12 @@ C2 配置
 
 任务：
 
-- [ ] Listener 列表提供状态、协议、地址、端口、Job 和关联 C2 信息。
-- [ ] 完善 mTLS、HTTP(S)、DNS 和 WireGuard 的分类型表单。
-- [ ] C2 Profile 编辑器提供结构化表单、JSON 高级模式和保存前校验。
-- [ ] Implant Studio 串联 Profile、Listener、平台、架构、格式、Beacon 参数和 Encoder。
-- [ ] 支持 Executable Metadata、生成摘要和构建历史关联。
-- [ ] 生成前执行依赖、Listener 和 Builder 预检。
+- [x] Listener 列表提供状态、协议、地址、端口、Job 和关联 C2 信息。
+- [x] 完善 mTLS、HTTP(S)、DNS 和 WireGuard 的分类型表单。
+- [x] C2 Profile 编辑器提供结构化表单、JSON 高级模式和保存前校验。
+- [x] Implant Studio 串联 Profile、Listener、平台、架构、格式、Beacon 参数和 Encoder。
+- [x] 支持 Executable Metadata、生成摘要和构建历史关联。
+- [x] 生成前执行依赖、Listener 和 Builder 预检。
 
 完成标准：
 
