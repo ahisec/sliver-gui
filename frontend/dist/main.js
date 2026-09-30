@@ -834,11 +834,11 @@ function showCtx(e, kind, obj) {
   const session = kind === 'session', windows = (obj.os || '').toLowerCase().includes('windows');
   const item = (action, label, options = {}) => `<button class="ctx-item${options.danger ? ' danger' : ''}" data-ctx-action="${action}" ${options.disabled ? 'disabled' : ''}>${label}</button>`;
   ctxMenu.innerHTML = `<div class="ctx-agent"><strong>${esc(obj.hostname || obj.name || obj.id.slice(0,8))}</strong><span>${session ? '实时会话' : '异步信标'}</span></div>
-    ${item('overview','主机概览')}${item('interact', session ? '打开工作区' : '打开信标工作区')}
+    ${item('overview','主机概览')}${session ? '' : item('interact','打开信标工作区')}
     <div class="ctx-divider"></div>
-    ${session ? `${item('spawn','生成新会话')}${windows ? item('screenshot','截取屏幕') : ''}${item('network','网络信息')}${item('files','文件浏览器')}${item('upload','上传文件')}${item('processes','进程浏览器')}${windows ? item('integrity','检查完整性级别') : ''}` : '<div class="ctx-hint">实时浏览和主机操作需使用 Session</div>'}
+    ${session ? `${item('spawn','生成新会话')}${windows ? item('screenshot','截取屏幕') : ''}${item('network','网络信息')}${item('files','文件浏览器')}${item('processes','进程浏览器')}${windows ? item('integrity','检查完整性级别') : ''}` : '<div class="ctx-hint">实时浏览和主机操作需使用 Session</div>'}
     <div class="ctx-divider"></div>
-    ${session ? item('infrastructure','网络基础设施') + item('automation','自动化脚本') : ''}${item('copy-summary','复制目标摘要')}
+    ${item('copy-summary','复制目标摘要')}
     ${session ? item('rename','重命名') : ''}<div class="ctx-divider"></div>${item('kill','终止', {danger:true})}`;
   ctxMenu.style.left = Math.max(8, Math.min(e.clientX, window.innerWidth-230))+'px';
   ctxMenu.style.top = Math.max(8, Math.min(e.clientY, window.innerHeight-Math.min(560, ctxMenu.scrollHeight || 560)))+'px';
