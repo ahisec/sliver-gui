@@ -1,0 +1,60 @@
+# ── Build output ─────────────────────────────────────────────
+build/bin/
+build/*.o
+# Release-staging dir used by the release workflow / `make`.
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Wails generated bindings/dev artifacts
+frontend/wailsjs/
+frontend/dist/wailsjs/
+node_modules/
+
+# ── Operator credentials — NEVER commit these ────────────────
+# Sliver operator config files contain live mTLS keys + auth tokens.
+*.cfg
+*.pem
+*.key
+*.p12
+operators/
+configs/
+
+# ── Downloaded loot / implants / dumps ───────────────────────
+*.dmp
+*.bin
+loot/
+implants/
+downloads/
+
+# Generated Sliver implants (our GUI names them <goos>-<goarch>-<id>[.exe],
+# which also catches extension-less Linux ELF implants).
+*-amd64-*
+*-386-*
+*-arm64-*
+
+# Named test implants used during development (arbitrary names).
+initial
+rootlinux
+ws01
+beacon
+beacon.exe
+svc
+svc.exe
+winnew*
+test.exe
+win.exe
+
+# ── Go ───────────────────────────────────────────────────────
+vendor/
+*.test
+*.out
+
+# ── Editor / OS / tooling cruft ──────────────────────────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

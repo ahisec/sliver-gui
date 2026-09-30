@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"/><title>Sliver GUI 中文版</title><link rel="stylesheet" href="./style.css"/></head>
+<body>
+
+<!-- Toast container -->
+<div id="toasts" class="toasts"></div>
+
+<!-- Connect overlay -->
+<div id="connect-overlay" class="overlay">
+  <div class="connect-card">
+    <div class="logo">SLIVER<span>GUI</span></div>
+    <p class="subtitle">使用操作员配置连接</p>
+    <div id="saved-configs" class="saved-configs"></div>
+    <button id="pick-config-btn" class="btn primary full">[+] 添加操作员 .cfg 配置</button>
+    <input id="manual-cfg-path" placeholder="或粘贴路径：/path/to/file.cfg" style="width:100%;margin-top:6px"/>
+    <div id="config-path" class="config-path"></div>
+    <button id="connect-btn" class="btn accent full" disabled>连接</button>
+    <div id="connect-error" class="error-msg"></div>
+    <div id="gui-version" class="gui-version"></div>
+  </div>
+</div>
+
+<!-- Main shell (Cobalt Strike layout) -->
+<div id="app-shell" class="app-shell hidden">
+
+  <!-- Top toolbar -->
+  <div class="toolbar-main">
+    <div class="toolbar-left">
+      <span class="brand-sm">SLIVER<span>GUI</span></span>
+      <span class="sep">|</span>
+      <button class="tb-btn" data-view="sessions">会话</button>
+      <button class="tb-btn" data-view="beacons">信标</button>
+      <button class="tb-btn" data-view="listeners">监听器</button>
+      <button class="tb-btn" data-view="generate">生成植入体</button>
+      <button class="tb-btn" data-view="builds">构建记录</button>
+      <button class="tb-btn" data-view="profiles">植入体配置</button>
+      <button class="tb-btn" data-view="events">事件日志</button>
+      <button class="tb-btn" data-view="loot">战利品</button>
+      <button class="tb-btn" data-view="creds">凭据</button>
+      <button class="tb-btn" data-view="hosts">主机</button>
+      <button class="tb-btn" data-view="operators">操作员</button>
+      <button class="tb-btn" data-view="scripts">脚本</button>
+      <button class="tb-btn" data-view="iocs">IOC</button>
+      <button class="tb-btn" data-view="report">报告</button>
+      <button class="tb-btn" data-view="c2profiles">C2 配置</button>
+    </div>
+    <div class="toolbar-right">
+      <span id="server-version" class="version-tag"></span>
+      <span id="operator-tag" class="operator-tag"></span>
+      <button id="disconnect-btn" class="btn small">断开连接</button>
+    </div>
+  </div>
+
+  <!-- Split layout: top=graph/table, bottom=interaction -->
+  <div class="split-layout">
+
+    <!-- Top panel: graph + table views -->
+    <div class="top-panel" id="top-panel">
+
+      <!-- View toggle -->
+      <div class="view-bar">
+        <button id="view-table-btn" class="vb-btn active">表格</button>
+        <button id="view-graph-btn" class="vb-btn">拓扑图</button>
+        <span class="spacer"></span>
+        <span id="agent-count" class="count-badge">0 个会话 | 0 个信标</span>
+        <button id="refresh-all-btn" class="btn small">刷新</button>
+      </div>
+
+      <!-- Table view -->
+      <div id="table-view" class="panel-content">
+        <div class="table-wrap">
+          <table class="data-table" id="agents-table">
+            <thead><tr>
+              <th>类型</th><th>名称 / ID</th><th>主机</th><th>用户</th><th>远程 IP</th><th>系统/架构</th>
+              <th>PID</th><th>传输协议</th><th>最后回连</th><th>状态</th>
+            </tr></thead>
+            <tbody id="agents-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Graph view -->
+      <div id="graph-view" class="panel-content hidden">
+        <svg id="graph-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="graph-legend">
+          <span class="leg-item"><span class="leg-line" style="border-top:3px solid #35c46b"></span> 普通会话</span>
+          <span class="leg-item"><span class="leg-line" style="border-top:3px solid #e23c4e"></span> 高权限会话</span>
+          <span class="leg-item"><span class="leg-line" style="border-top:3px solid #4d9fe6"></span> 信标</span>
+          <span class="leg-item"><span class="leg-line" style="border-top:3px dashed #f5a623"></span> 横向移动</span>
+          <span class="leg-item"><span class="leg-line" style="border-top:3px solid #6b7280;opacity:.6"></span> 离线代理</span>
+          <span class="sep">|</span>
+          <span class="leg-item"><span style="display:inline-block;width:10px;height:10px;border:1.5px dashed #35c46b;border-radius:2px;vertical-align:middle;margin-right:4px"></span> 当前选中</span>
+          <span class="leg-item"><span style="display:inline-block;width:10px;height:10px;border:1.2px dashed #f5a623;border-radius:2px;vertical-align:middle;margin-right:4px"></span> 横向关联节点</span>
+          <span class="sep">|</span>
+          <span class="leg-item" style="color:var(--muted)">拖动节点 · 滚轮缩放 · 拖动背景平移</span>
+          <span class="spacer"></span>
+          <button id="graph-reset-btn" class="btn small">重置布局</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Resize handle -->
+    <div class="resize-handle" id="resize-handle"></div>
+
+    <!-- Bottom panel: interaction console -->
+    <div class="bottom-panel" id="bottom-panel">
+      <div class="interact-bar">
+        <span class="interact-label" id="interact-label">未选择代理，请双击上方代理开始交互</span>
+        <div id="interact-tabs" class="interact-tabs"></div>
+        <span class="spacer"></span>
+        <button id="notes-btn" class="btn small" title="此代理的操作员笔记">📝 笔记</button>
+      </div>
+      <div id="interact-panels" class="interact-panels">
+        <div class="empty-interact" id="empty-interact">
+          <p>双击表格或拓扑图中的会话/信标以打开交互控制台。</p>
+          <p style="margin-top:8px;color:var(--muted)">可用视图：会话、信标、监听器、生成植入体、事件日志、战利品、操作员</p>
+        </div>
+      </div>
+      <div class="panel-watermark" id="panel-watermark">Made by Raj Kumar Mullapudi</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Reconnect overlay -->
+<div id="reconnect-overlay" class="overlay hidden">
+  <div class="connect-card">
+    <div class="logo">SLIVER<span>GUI</span></div>
+    <p class="subtitle" style="color:var(--accent)">与团队服务器的连接已断开</p>
+    <div id="reconnect-status" class="config-path">正在重新连接...</div>
+    <div class="reconnect-count"><span id="reconnect-count">10</span> 秒后重试</div>
+    <button id="reconnect-now-btn" class="btn accent full">立即重试</button>
+    <button id="reconnect-cancel-btn" class="btn small full">停止重连</button>
+  </div>
+</div>
+
+<!-- Modal window for config views (Generate, Listeners, Builds, Profiles, etc.) -->
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <span id="modal-title" class="modal-title">面板</span>
+      <button id="modal-close" class="modal-close">×</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<!-- Command palette (Ctrl+K) -->
+<div id="palette-overlay" class="palette-overlay hidden">
+  <div class="palette">
+    <input id="palette-input" class="palette-input" placeholder="搜索代理和面板…（↑↓ 移动，Enter 打开，Esc 关闭）" autocomplete="off"/>
+    <div id="palette-results" class="palette-results"></div>
+  </div>
+</div>
+
+<!-- Context menu -->
+<div id="ctx-menu" class="ctx-menu hidden">
+  <div class="ctx-item" id="ctx-interact">交互</div>
+  <div class="ctx-item" id="ctx-files">文件浏览器</div>
+  <div class="ctx-item" id="ctx-processes">进程浏览器</div>
+  <div class="ctx-item" id="ctx-integrity">检查完整性级别</div>
+  <div class="ctx-item" id="ctx-rename">重命名</div>
+  <div class="ctx-divider"></div>
+  <div class="ctx-item danger" id="ctx-kill">终止</div>
+</div>
+
+<script src="./main.js"></script>
+</body>
+</html>
