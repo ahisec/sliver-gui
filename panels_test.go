@@ -93,6 +93,41 @@ func TestFilePropertiesViewPreservesReadOnlyMetadata(t *testing.T) {
 	}
 }
 
+func TestChtimesRequestPreservesTargetAndTimes(t *testing.T) {
+	request, err := chtimesRequest("session-test", `/tmp/evidence.log`, 1710000000, 1710000100)
+	if err != nil {
+		t.Fatalf("chtimesRequest returned an unexpected error: %v", err)
+	}
+	if request.Path != `/tmp/evidence.log` || request.ATime != 1710000000 || request.MTime != 1710000100 {
+		t.Fatalf("target or timestamps were not preserved: %#v", request)
+	}
+	if request.Request == nil || request.Request.SessionID != "session-test" {
+		t.Fatalf("session target was not preserved: %#v", request.Request)
+	}
+}
+
+func TestChtimesRequestRejectsMissingTargetAndUnsupportedRange(t *testing.T) {
+	tests := []struct {
+		name      string
+		sessionID string
+		path      string
+		atime     int64
+		mtime     int64
+	}{
+		{name: "missing session", path: "/tmp/evidence.log", atime: 1, mtime: 1},
+		{name: "missing path", sessionID: "session-test", atime: 1, mtime: 1},
+		{name: "access time too early", sessionID: "session-test", path: "/tmp/evidence.log", atime: minEditableUnixSeconds - 1, mtime: 1},
+		{name: "modification time too late", sessionID: "session-test", path: "/tmp/evidence.log", atime: 1, mtime: maxEditableUnixSeconds + 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := chtimesRequest(tt.sessionID, tt.path, tt.atime, tt.mtime); err == nil {
+				t.Fatal("chtimesRequest accepted invalid input")
+			}
+		})
+	}
+}
+
 func TestFullProcessListRequestRequestsMetadata(t *testing.T) {
 	request := fullProcessListRequest("session-test")
 	if !request.FullInfo {

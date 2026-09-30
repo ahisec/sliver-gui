@@ -1401,19 +1401,54 @@ func (a *App) Chown(sessionID, path, uid, gid string) error {
 	return err
 }
 
-// Chtimes timestomps a file — sets access + modified time (unix seconds).
-func (a *App) Chtimes(sessionID, path string, atime, mtime int64) error {
-	client, err := a.requireClient()
-	if err != nil {
-		return err
+const (
+	minEditableUnixSeconds int64 = -11644473600 // 1601-01-01T00:00:00Z
+	maxEditableUnixSeconds int64 = 253402300799 // 9999-12-31T23:59:59Z
+)
+
+func chtimesRequest(sessionID, path string, atime, mtime int64) (*sliverpb.ChtimesReq, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, errors.New("session ID is required")
 	}
-	_, err = client.RPC.Chtimes(a.ctx, &sliverpb.ChtimesReq{
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("path is required")
+	}
+	if atime < minEditableUnixSeconds || atime > maxEditableUnixSeconds {
+		return nil, errors.New("access time is outside the supported range")
+	}
+	if mtime < minEditableUnixSeconds || mtime > maxEditableUnixSeconds {
+		return nil, errors.New("modification time is outside the supported range")
+	}
+	return &sliverpb.ChtimesReq{
 		Path:    path,
 		ATime:   atime,
 		MTime:   mtime,
 		Request: &commonpb.Request{SessionID: sessionID},
-	})
-	return err
+	}, nil
+}
+
+// Chtimes sets a remote file or directory access and modification time.
+func (a *App) Chtimes(sessionID, path string, atime, mtime int64) error {
+	req, err := chtimesRequest(sessionID, path, atime, mtime)
+	if err != nil {
+		return err
+	}
+	client, err := a.requireClient()
+	if err != nil {
+		return err
+	}
+	a.audit.log("file-chtimes", sessionID, fmt.Sprintf("%s (atime=%d, mtime=%d)", path, atime, mtime))
+	resp, err := client.RPC.Chtimes(a.ctx, req)
+	if err != nil {
+		return err
+	}
+	if resp == nil {
+		return errors.New("teamserver returned an empty chtimes response")
+	}
+	if resp.Response != nil && resp.Response.Err != "" {
+		return errors.New(resp.Response.Err)
+	}
+	return nil
 }
 
 // ─── Reverse port forwarding (session) ──────────────────────────────────────────

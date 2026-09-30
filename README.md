@@ -102,7 +102,7 @@ One-click post-exploitation **recipes** (Cobalt-Strike-style jump / spawn / remo
 - **Enumeration** — network scan, Active Directory enumeration, local Windows enum.
 
 ### Operator Panels
-- **File Browser** — visual remote filesystem (list / delete).
+- **File Browser** — visual remote filesystem with mounts, transfers, properties, timestamp editing, hashing, execution, and deletion.
 - **Process Browser** — visual process list + kill.
 - **Kill-Chain Tracker** — record and visualise the current engagement stage.
 - **Engagement Timer** — start / elapsed stopwatch.

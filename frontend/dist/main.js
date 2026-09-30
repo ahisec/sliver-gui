@@ -4560,7 +4560,15 @@ async function openFileBrowser(sessionID) {
     let closed = false;
     let props = null;
     let hashResult = null;
-    const close = () => { closed = true; ov.remove(); document.removeEventListener('keydown', onKey); };
+    let editingTimestamps = false;
+    let savingTimestamps = false;
+    let timestampDraft = { accessedAt: '', modifiedAt: '' };
+    const close = () => {
+      if (savingTimestamps) return;
+      closed = true;
+      ov.remove();
+      document.removeEventListener('keydown', onKey);
+    };
     const onKey = event => { if (event.key === 'Escape') close(); };
     ov.addEventListener('click', event => { if (event.target === ov) close(); });
     document.addEventListener('keydown', onKey);
@@ -4570,6 +4578,18 @@ async function openFileBrowser(sessionID) {
       const hashRow = file.isDir
         ? '<div><dt>SHA-256</dt><dd>目录不支持哈希核验</dd></div>'
         : `<div><dt>SHA-256</dt><dd class="file-props-hash">${hashResult?.hash ? `<code>${esc(hashResult.hash)}</code><button class="btn small" data-props-copy-hash>复制</button>` : '未计算'}</dd></div>`;
+      const timestampEditor = editingTimestamps ? `<form class="file-timestamp-form" data-timestamp-form>
+        <div class="file-timestamp-fields">
+          <label><span>访问时间</span><input name="accessedAt" type="datetime-local" step="1" required value="${esc(timestampDraft.accessedAt)}"/><small>${props?.accessedAt ? '使用当前属性值预填。' : '上游无法读取当前值，请显式填写。'}</small></label>
+          <label><span>修改时间</span><input name="modifiedAt" type="datetime-local" step="1" required value="${esc(timestampDraft.modifiedAt)}"/><small>使用当前属性值预填。</small></label>
+        </div>
+        <div class="task-note">输入按操作员本机时区解释。当前 Sliver RPC 不支持修改创建时间。</div>
+        <div class="execute-file-error" role="alert">${state === 'timestamp-error' ? esc(message) : ''}</div>
+        <div class="ui-dialog-actions">
+          <button type="button" class="btn small" data-timestamp-cancel ${savingTimestamps ? 'disabled' : ''}>取消</button>
+          <button type="submit" class="btn small accent" data-timestamp-save ${savingTimestamps ? 'disabled' : ''}>${savingTimestamps ? '正在保存...' : '保存时间戳'}</button>
+        </div>
+      </form>` : '';
       ov.innerHTML = `<div class="ui-dialog file-properties-dialog">
         <div class="ui-dialog-title">属性</div>
         <div class="file-props-head"><strong>${esc(file.name)}</strong><span>${esc(props?.type || (file.isDir ? '文件夹' : fileTypeLabel(file.name, false)))}</span></div>
@@ -4586,10 +4606,12 @@ async function openFileBrowser(sessionID) {
           ${hashRow}
         </dl>
         <div class="task-note">属性来自 Sliver 已公开的文件列表和下载 RPC；目标或 Teamserver 未返回的字段显示为不可用。</div>
-        <div class="ui-dialog-actions">
+        ${timestampEditor}
+        <div class="ui-dialog-actions file-props-actions">
           <button type="button" class="btn small" data-props-copy-path>复制路径</button>
           <button type="button" class="btn small" data-props-copy-summary>复制摘要</button>
           ${file.isDir ? '' : `<button type="button" class="btn small" data-props-hash ${state === 'hashing' ? 'disabled' : ''}>${state === 'hashing' ? '正在计算...' : '计算哈希'}</button>`}
+          <button type="button" class="btn small" data-props-edit-time ${editingTimestamps || savingTimestamps ? 'disabled' : ''}>修改时间戳</button>
           <button type="button" class="btn small" data-props-refresh ${state === 'loading' ? 'disabled' : ''}>刷新</button>
           <button type="button" class="btn small accent" data-dialog-close>关闭</button>
         </div>
@@ -4598,11 +4620,65 @@ async function openFileBrowser(sessionID) {
       ov.querySelector('[data-props-copy-path]')?.addEventListener('click', () => copyFilePropertyText(props?.path || file.path, '路径'));
       ov.querySelector('[data-props-copy-summary]')?.addEventListener('click', () => copyFilePropertyText(filePropertiesSummary(props || file, hashResult), '属性摘要'));
       ov.querySelector('[data-props-copy-hash]')?.addEventListener('click', () => copyFilePropertyText(hashResult?.hash || '', '哈希'));
-      ov.querySelector('[data-props-refresh]')?.addEventListener('click', loadProperties);
+      ov.querySelector('[data-props-refresh]')?.addEventListener('click', () => loadProperties());
       ov.querySelector('[data-props-hash]')?.addEventListener('click', calculateHash);
+      ov.querySelector('[data-props-edit-time]')?.addEventListener('click', startTimestampEdit);
+      ov.querySelector('[data-timestamp-cancel]')?.addEventListener('click', cancelTimestampEdit);
+      ov.querySelector('[data-timestamp-form]')?.addEventListener('submit', saveTimestamps);
     };
 
-    async function loadProperties() {
+    function startTimestampEdit() {
+      timestampDraft = {
+        accessedAt: TimestampEditor.unixSecondsToLocalInput(props?.accessedAt),
+        modifiedAt: TimestampEditor.unixSecondsToLocalInput(props?.modTime || file.modTime),
+      };
+      editingTimestamps = true;
+      draw('ready');
+      ov.querySelector('input[name="accessedAt"]')?.focus();
+    }
+
+    function cancelTimestampEdit() {
+      if (savingTimestamps) return;
+      editingTimestamps = false;
+      draw('ready');
+    }
+
+    async function saveTimestamps(event) {
+      event.preventDefault();
+      if (savingTimestamps) return;
+      const form = event.currentTarget;
+      timestampDraft = {
+        accessedAt: form.elements.accessedAt.value,
+        modifiedAt: form.elements.modifiedAt.value,
+      };
+      const accessed = TimestampEditor.localInputToUnixSeconds(timestampDraft.accessedAt);
+      const modified = TimestampEditor.localInputToUnixSeconds(timestampDraft.modifiedAt);
+      if (accessed.error || modified.error) {
+        draw('timestamp-error', accessed.error ? `访问时间：${accessed.error}` : `修改时间：${modified.error}`);
+        return;
+      }
+      const confirmed = await uiConfirm(
+        `确定修改“${file.path}”的时间戳吗？\n访问时间：${formatModTime(accessed.seconds)}\n修改时间：${formatModTime(modified.seconds)}`,
+        { title: '确认修改时间戳', okLabel: '保存' },
+      );
+      if (!confirmed || closed) return;
+      savingTimestamps = true;
+      draw('ready');
+      const error = await App().Chtimes(sessionID, file.path, accessed.seconds, modified.seconds).then(() => null).catch(value => value);
+      savingTimestamps = false;
+      if (error) {
+        const info = rpcError(error, '修改时间戳失败');
+        draw('timestamp-error', info.detail ? `${info.message}：${info.detail}` : info.message);
+        return;
+      }
+      editingTimestamps = false;
+      file.modTime = modified.seconds;
+      await loadProperties('时间戳已保存；修改时间已回读，访问时间是否可见取决于上游属性支持。');
+      await renderDir(currentPath, false);
+      toast('ok', '时间戳已修改');
+    }
+
+    async function loadProperties(successMessage = '') {
       draw('loading', '正在刷新属性...');
       const result = await App().FileBrowserProperties(sessionID, file.path).catch(error => ({ error }));
       if (result?.error) {
@@ -4612,7 +4688,7 @@ async function openFileBrowser(sessionID) {
         return;
       }
       props = result;
-      draw('ready');
+      draw('ready', successMessage);
     }
 
     async function calculateHash() {
