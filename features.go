@@ -604,11 +604,11 @@ func (a *App) RemoveWebsiteContent(website, webPath string) error {
 	if err != nil {
 		return err
 	}
-	a.audit.log("website-rm", website, webPath)
 	_, err = client.RPC.WebsiteRemoveContent(a.ctx, &clientpb.WebsiteRemoveContent{
 		Name:  website,
 		Paths: []string{webPath},
 	})
+	a.logDestructive("website-content-remove", website, err)
 	return err
 }
 

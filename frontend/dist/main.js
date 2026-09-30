@@ -111,6 +111,19 @@ function uiDialog({ title, message, input, placeholder, okLabel = '确定', dang
 function uiConfirm(message, opts = {}) { return uiDialog({ message, ...opts }); }
 function uiPrompt(message, defaultValue = '', opts = {}) { return uiDialog({ message, input: true, placeholder: defaultValue, okLabel: '确定', ...opts }); }
 
+async function runDangerousAction({ title, message, okLabel, action, success, refresh }) {
+  const confirmed = await uiConfirm(message, { title, okLabel, danger: true });
+  if (!confirmed) return false;
+  const error = await action().then(() => null).catch(error => error);
+  if (error) {
+    toastRpcError(error, `${title}失败`);
+    return false;
+  }
+  if (success) toast('ok', success);
+  if (refresh) await refresh();
+  return true;
+}
+
 function isPrivileged(obj) {
   // If we've actually queried integrity for this agent, trust that over the guess.
   const lvl = (integrityMap[obj.id] || '').toLowerCase();
@@ -1406,6 +1419,7 @@ async function dispatchCmd(kind, id, raw) {
     }
     case 'kill': case 'terminate': {
       if (!args[0]) return appendOut(id, `usage: ${cmd} <pid>`, 'err');
+      if (!(await uiConfirm(`确定终止远程进程 PID ${esc(args[0])} 吗？`, { title:'终止进程', okLabel:'终止', danger:true }))) return;
       await App().KillRemoteProcess(id, parseInt(args[0]));
       return appendOut(id, `[+] terminated PID ${args[0]}`, 'out');
     }
@@ -1448,21 +1462,21 @@ async function dispatchCmd(kind, id, raw) {
     case 'socks': {
       const sub = (args[0]||'').toLowerCase();
       if (sub === 'start') { await App().StartSocksProxy(id, parseInt(args[1])||1080); return appendOut(id, `[+] SOCKS5 on 127.0.0.1:${parseInt(args[1])||1080}`, 'out'); }
-      if (sub === 'stop')  { await App().StopSocksProxy(id); return appendOut(id, '[+] SOCKS5 stopped', 'out'); }
+      if (sub === 'stop')  { if (!(await uiConfirm('确定停止此会话的 SOCKS5 代理吗？', { title:'停止 SOCKS5', okLabel:'停止', danger:true }))) return; await App().StopSocksProxy(id); return appendOut(id, '[+] SOCKS5 stopped', 'out'); }
       const p = await App().SocksProxyStatus(id);
       return appendOut(id, p ? `[*] SOCKS5 active on 127.0.0.1:${p}` : '[*] no SOCKS5 proxy running', 'info');
     }
     case 'portfwd': {
       const sub = (args[0]||'').toLowerCase();
       if (sub === 'add') { await App().AddPortForward(id, parseInt(args[1]), args[2], parseInt(args[3])); return appendOut(id, `[+] 127.0.0.1:${args[1]} -> ${args[2]}:${args[3]}`, 'out'); }
-      if (sub === 'rm')  { await App().RemovePortForward(id, parseInt(args[1])); return appendOut(id, `[+] removed forward on :${args[1]}`, 'out'); }
+      if (sub === 'rm')  { if (!(await uiConfirm(`确定停止本地端口 ${esc(args[1])} 的转发吗？`, { title:'停止端口转发', okLabel:'停止', danger:true }))) return; await App().RemovePortForward(id, parseInt(args[1])); return appendOut(id, `[+] removed forward on :${args[1]}`, 'out'); }
       const fwds = await App().ListPortForwards(id);
       return appendOut(id, fwds.length ? fwds.map(f => `127.0.0.1:${f.localPort} -> ${f.remote}`).join('\n') : '[*] no port forwards', 'info');
     }
     case 'pivot': {
       const sub = (args[0]||'').toLowerCase();
       if (sub === 'start') { await App().StartPivotListener(id, args[1]||'tcp', args[2]||'0.0.0.0:9898'); return appendOut(id, `[+] pivot listener started (${args[1]||'tcp'} ${args[2]||'0.0.0.0:9898'})`, 'out'); }
-      if (sub === 'stop')  { await App().StopPivotListener(id, parseInt(args[1])); return appendOut(id, `[+] pivot ${args[1]} stopped`, 'out'); }
+      if (sub === 'stop')  { if (!(await uiConfirm(`确定停止 Pivot ${esc(args[1])} 吗？下游连接可能受影响。`, { title:'停止 Pivot', okLabel:'停止', danger:true }))) return; await App().StopPivotListener(id, parseInt(args[1])); return appendOut(id, `[+] pivot ${args[1]} stopped`, 'out'); }
       const pv = await App().ListPivots(id);
       return appendOut(id, pv.length ? pv.map(p => `#${p.id} ${p.type} ${p.bindAddress}`).join('\n') : '[*] no pivot listeners', 'info');
     }
@@ -1563,6 +1577,7 @@ async function dispatchCmd(kind, id, raw) {
     }
     case 'rm': case 'rmdir': {
       if (!args[0]) return appendOut(id, 'usage: rm <path>', 'err');
+      if (!(await uiConfirm(`确定删除目标上的“${esc(args[0])}”吗？`, { title:'删除远程文件', okLabel:'删除', danger:true }))) return;
       await App().RemoveFile(id, args[0]);
       return appendOut(id, `[+] removed ${args[0]}`, 'out');
     }
@@ -1682,12 +1697,12 @@ async function dispatchCmd(kind, id, raw) {
     case 'wg-portfwd': {
       const sub = (args[0]||'').toLowerCase();
       if (sub === 'add') { await App().WGStartPortForward(id, parseInt(args[1]), args[2]); return appendOut(id, `[+] WG forward 127.0.0.1:${args[1]} -> ${args[2]}`, 'out'); }
-      if (sub === 'rm')  { await App().WGStopPortForward(id, parseInt(args[1])); return appendOut(id, `[+] WG forward ${args[1]} stopped`, 'out'); }
+      if (sub === 'rm')  { if (!(await uiConfirm(`确定停止 WireGuard 转发 ${esc(args[1])} 吗？`, { title:'停止 WireGuard 转发', okLabel:'停止', danger:true }))) return; await App().WGStopPortForward(id, parseInt(args[1])); return appendOut(id, `[+] WG forward ${args[1]} stopped`, 'out'); }
       return appendOut(id, 'usage: wg-portfwd add <lport> <remoteHost:port> | rm <id>', 'err');
     }
     case 'wg-socks': {
       const sub = (args[0]||'').toLowerCase();
-      if (sub === 'stop') { await App().WGStopSocks(id, parseInt(args[1])); return appendOut(id, `[+] WG socks ${args[1]} stopped`, 'out'); }
+      if (sub === 'stop') { if (!(await uiConfirm(`确定停止 WireGuard SOCKS ${esc(args[1])} 吗？`, { title:'停止 WireGuard SOCKS', okLabel:'停止', danger:true }))) return; await App().WGStopSocks(id, parseInt(args[1])); return appendOut(id, `[+] WG socks ${args[1]} stopped`, 'out'); }
       await App().WGStartSocks(id, parseInt(args[0])||1081);
       return appendOut(id, `[+] WG SOCKS proxy on 127.0.0.1:${parseInt(args[0])||1081}`, 'out');
     }
@@ -1699,7 +1714,7 @@ async function dispatchCmd(kind, id, raw) {
         const err = await App().LootFile(id, args.slice(1).join(' ')).then(() => null).catch(e => String(e));
         return appendOut(id, err ? `[error] ${err}` : `[+] added ${args[1]} to the shared loot store`, err?'err':'out');
       }
-      if (sub === 'rm') { await App().DeleteLoot(args[1]); return appendOut(id, `[+] loot ${args[1]} removed`, 'out'); }
+      if (sub === 'rm') { if (!args[1]) return appendOut(id, 'usage: loot rm <id>', 'err'); if (!(await uiConfirm(`确定删除战利品 ${esc(args[1])} 吗？`, { title:'删除战利品', okLabel:'删除', danger:true }))) return; await App().DeleteLoot(args[1]); return appendOut(id, `[+] loot ${args[1]} removed`, 'out'); }
       const loot = await App().GetLoot().catch(() => []);
       if (!loot.length) return appendOut(id, '[*] loot store is empty (use: loot add <remote_path>)', 'info');
       let out = 'ID            TYPE        NAME\n';
@@ -1746,7 +1761,7 @@ async function dispatchCmd(kind, id, raw) {
     case 'rportfwd': {
       const sub = (args[0]||'').toLowerCase();
       if (sub === 'add') { await App().StartRportFwd(id, '0.0.0.0', parseInt(args[1]), args[2], parseInt(args[3])); return appendOut(id, `[+] reverse forward: target :${args[1]} -> ${args[2]}:${args[3]}`, 'out'); }
-      if (sub === 'rm') { await App().StopRportFwd(id, parseInt(args[1])); return appendOut(id, `[+] removed reverse forward ${args[1]}`, 'out'); }
+      if (sub === 'rm') { if (!(await uiConfirm(`确定停止反向端口转发 ${esc(args[1])} 吗？`, { title:'停止反向端口转发', okLabel:'停止', danger:true }))) return; await App().StopRportFwd(id, parseInt(args[1])); return appendOut(id, `[+] removed reverse forward ${args[1]}`, 'out'); }
       const fwds = await App().ListRportFwds(id);
       return appendOut(id, fwds.length ? fwds.map(f => `#${f.id} ${f.bind} -> ${f.forward}`).join('\n') : '[*] no reverse port forwards', 'info');
     }
@@ -2702,7 +2717,7 @@ async function runServerCmd(raw) {
         return appendServer(o.trimEnd(), 'out');
       }
       case 'jobs': case 'listeners': {
-        if (args[0] === 'kill') { await App().KillJob(parseInt(args[1])); return appendServer(`[+] job ${args[1]} killed`, 'out'); }
+        if (args[0] === 'kill') { if (!args[1]) return appendServer('usage: jobs kill <id>', 'err'); if (!(await uiConfirm(`确定终止 Job ${esc(args[1])} 吗？`, { title:'终止 Job', okLabel:'终止', danger:true }))) return; await App().KillJob(parseInt(args[1])); return appendServer(`[+] job ${args[1]} killed`, 'out'); }
         const j = await App().ListJobs(); if (!j.length) return appendServer('no active jobs', 'info');
         let o = 'ID    NAME       PROTO   PORT\n';
         j.forEach(x => o += `${String(x.id).padEnd(6)}${(x.name||'').padEnd(11)}${(x.protocol||'').padEnd(8)}${x.port||''}\n`);
@@ -2713,7 +2728,7 @@ async function runServerCmd(raw) {
         return appendServer(ops.map(o => `${o.online?'[online] ':'[offline]'} ${o.name}`).join('\n'), 'out');
       }
       case 'loot': {
-        if (args[0] === 'rm') { await App().DeleteLoot(args[1]); return appendServer(`[+] loot ${args[1]} removed`, 'out'); }
+        if (args[0] === 'rm') { if (!args[1]) return appendServer('usage: loot rm <id>', 'err'); if (!(await uiConfirm(`确定删除战利品 ${esc(args[1])} 吗？`, { title:'删除战利品', okLabel:'删除', danger:true }))) return; await App().DeleteLoot(args[1]); return appendServer(`[+] loot ${args[1]} removed`, 'out'); }
         if (args[0] === 'rename') { if (args.length < 3) return appendServer('usage: loot rename <id> <new-name>', 'err'); await App().RenameLoot(args[1], args.slice(2).join(' ')); return appendServer('[+] loot renamed', 'out'); }
         const l = await App().GetLoot(); if (!l.length) return appendServer('loot store empty', 'info');
         return appendServer(l.map(x => `${x.id.slice(0,12)}  ${(x.type||'').padEnd(10)} ${x.name}`).join('\n'), 'out');
@@ -2732,8 +2747,8 @@ async function runServerCmd(raw) {
       case 'https': { await App().StartHTTPListener({host:'0.0.0.0',port:parseInt(args[0])||443,secure:true}); return appendServer(`[+] HTTPS listener started on :${parseInt(args[0])||443}`, 'out'); }
       case 'dns': { if (!args.length) return appendServer('usage: dns <domain...>', 'err'); await App().StartDNSListener({domains:args}); return appendServer(`[+] DNS listener for ${args.join(', ')}`, 'out'); }
       case 'wg': case 'wireguard': { await App().StartWGListener({port:parseInt(args[0])||53,nPort:parseInt(args[1])||8888,keyPort:parseInt(args[2])||1337}); return appendServer(`[+] WireGuard listener started`, 'out'); }
-      case 'kill-session': case 'rm-session': { if (!args[0]) return appendServer('usage: kill-session <id-prefix>', 'err'); const s = allSessions.find(x => x.id.startsWith(args[0])); if (!s) return appendServer('no matching session', 'err'); await App().KillSession(s.id); return appendServer(`[+] killed session ${s.hostname}`, 'out'); }
-      case 'kill-beacon': case 'rm-beacon': { if (!args[0]) return appendServer('usage: kill-beacon <id-prefix>', 'err'); const b = allBeacons.find(x => x.id.startsWith(args[0])); if (!b) return appendServer('no matching beacon', 'err'); await App().KillBeacon(b.id); return appendServer(`[+] removed beacon ${b.hostname}`, 'out'); }
+      case 'kill-session': case 'rm-session': { if (!args[0]) return appendServer('usage: kill-session <id-prefix>', 'err'); const s = allSessions.find(x => x.id.startsWith(args[0])); if (!s) return appendServer('no matching session', 'err'); if (!(await uiConfirm(`确定终止 ${esc(s.hostname || s.id)} 上的会话吗？`, { title:'终止会话', okLabel:'终止', danger:true }))) return; await App().KillSession(s.id); return appendServer(`[+] killed session ${s.hostname}`, 'out'); }
+      case 'kill-beacon': case 'rm-beacon': { if (!args[0]) return appendServer('usage: kill-beacon <id-prefix>', 'err'); const b = allBeacons.find(x => x.id.startsWith(args[0])); if (!b) return appendServer('no matching beacon', 'err'); if (!(await uiConfirm(`确定终止 ${esc(b.hostname || b.id)} 上的信标吗？`, { title:'终止信标', okLabel:'终止', danger:true }))) return; await App().KillBeacon(b.id); return appendServer(`[+] removed beacon ${b.hostname}`, 'out'); }
       case 'rename': { if (args.length < 2) return appendServer('usage: rename <session-id-prefix> <new-name>', 'err'); const s = allSessions.find(x => x.id.startsWith(args[0])); if (!s) return appendServer('no matching session', 'err'); await App().RenameSession(s.id, args.slice(1).join(' ')); refreshAgents(); return appendServer('[+] renamed', 'out'); }
       case 'c2profiles': { const p = await App().ListC2Profiles(); if (!p.length) return appendServer('no HTTP C2 profiles', 'info'); return appendServer(p.map(x => x.name).join('\n'), 'out'); }
       case 'certificates': case 'certs': {
@@ -2820,12 +2835,12 @@ async function runServerCmd(raw) {
         const sub = (args[0]||'').toLowerCase();
         if (sub === 'add') { if (args.length < 4) return appendServer('usage: website add <site> <web-path> <local-file>', 'err'); await App().AddWebsiteContent(args[1], args[2], args[3]); return appendServer('[+] content added', 'out'); }
         if (sub === 'update') { if (args.length < 4) return appendServer('usage: website update <site> <web-path> <local-file>', 'err'); await App().UpdateWebsiteContent(args[1], args[2], args[3]); return appendServer('[+] content updated', 'out'); }
-        if (sub === 'rm')  { if (args.length < 3) return appendServer('usage: website rm <site> <web-path>', 'err'); await App().RemoveWebsiteContent(args[1], args[2]); return appendServer('[+] content removed', 'out'); }
+        if (sub === 'rm')  { if (args.length < 3) return appendServer('usage: website rm <site> <web-path>', 'err'); if (!(await uiConfirm(`确定从网站“${esc(args[1])}”删除指定内容吗？`, { title:'删除网站内容', okLabel:'删除', danger:true }))) return; await App().RemoveWebsiteContent(args[1], args[2]); return appendServer('[+] content removed', 'out'); }
         const w = await App().ListWebsites(); if (!w || !w.length) return appendServer('no websites', 'info');
         return appendServer(w.map(x => x.name).join('\n'), 'out');
       }
       case 'hosts': {
-        if (args[0] === 'rm') { await App().DeleteHost(args[1]); return appendServer(`[+] host ${args[1]} removed`, 'out'); }
+        if (args[0] === 'rm') { if (!args[1]) return appendServer('usage: hosts rm <id>', 'err'); if (!(await uiConfirm(`确定删除主机记录 ${esc(args[1])} 吗？`, { title:'删除主机', okLabel:'删除', danger:true }))) return; await App().DeleteHost(args[1]); return appendServer(`[+] host ${args[1]} removed`, 'out'); }
         if (args[0] === 'ioc-rm') { if (!args[1]) return appendServer('usage: hosts ioc-rm <ioc-id> [path] [filehash]', 'err'); await App().RemoveHostIOC(args[1], args[2]||'', args[3]||''); return appendServer('[+] host IOC removed', 'out'); }
         const h = await App().ListHosts(); if (!h.length) return appendServer('no hosts in the database', 'info');
         let o = 'HOSTNAME             OS                             UUID\n';
@@ -2834,7 +2849,7 @@ async function runServerCmd(raw) {
       }
       case 'creds': {
         if (args[0] === 'add') { if (args.length < 3) return appendServer('usage: creds add <username> <password>', 'err'); await App().AddCred(args[1], args[2], ''); return appendServer('[+] credential added', 'out'); }
-        if (args[0] === 'rm') { await App().DeleteCred(args[1]); return appendServer(`[+] credential ${args[1]} removed`, 'out'); }
+        if (args[0] === 'rm') { if (!args[1]) return appendServer('usage: creds rm <id>', 'err'); if (!(await uiConfirm(`确定删除凭据记录 ${esc(args[1])} 吗？`, { title:'删除凭据', okLabel:'删除', danger:true }))) return; await App().DeleteCred(args[1]); return appendServer(`[+] credential ${args[1]} removed`, 'out'); }
         if (args[0] === 'update') { if (args.length < 3) return appendServer('usage: creds update <id> <plaintext>', 'err'); await App().UpdateCredential(args[1], '', args[2], '', true); return appendServer('[+] credential updated', 'out'); }
         if (args[0] === 'sniff') { if (!args[1]) return appendServer('usage: creds sniff <hash>', 'err'); const ht = await App().SniffCredHashType(args[1]); return appendServer(`hash type: ${ht}`, 'out'); }
         if (args[0] === 'get') { if (!args[1]) return appendServer('usage: creds get <id>', 'err'); const c = await App().GetCredential(args[1]); return appendServer(`ID:        ${c.id}\nUsername:  ${c.username}\nPlaintext: ${c.plaintext}\nHash:      ${c.hash}\nCracked:   ${c.cracked}`, 'out'); }
@@ -2845,7 +2860,7 @@ async function runServerCmd(raw) {
       }
       case 'regenerate': { if (!args[0]) return appendServer('usage: regenerate <build-name>', 'err'); const r = await App().RegenerateBuild(args[0]); return appendServer(r.error ? `[error] ${r.error}` : `[+] saved ${r.path} (${fmtSize(r.bytes)})`, r.error?'err':'out'); }
       case 'websites': {
-        if (args[0] === 'rm') { await App().RemoveWebsite(args[1]); return appendServer(`[+] website ${args[1]} removed`, 'out'); }
+        if (args[0] === 'rm') { if (!args[1]) return appendServer('usage: websites rm <name>', 'err'); if (!(await uiConfirm(`确定删除网站“${esc(args[1])}”及其全部内容吗？`, { title:'删除网站', okLabel:'删除', danger:true }))) return; await App().RemoveWebsite(args[1]); return appendServer(`[+] website ${args[1]} removed`, 'out'); }
         const w = await App().ListWebsites(); if (!w.length) return appendServer('no websites', 'info');
         return appendServer(w.map(x => `${(x.name||'').padEnd(20)} ${x.paths} path(s)`).join('\n'), 'out');
       }
@@ -2934,7 +2949,10 @@ async function refreshLootList() {
   const el = document.getElementById('loot-list'); if (!el) return;
   const loot = await App().GetLoot().catch(() => []);
   if (!loot?.length) { el.innerHTML = '<div style="padding:10px;color:var(--muted)">暂无战利品。</div>'; return; }
-  el.innerHTML = loot.map(l => `<div style="padding:4px 10px;font-size:12.5px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1">${esc(l.name)}</span><span style="color:var(--muted)">${esc(l.type)}</span><span style="color:var(--muted);font-family:var(--mono)">${esc(l.id.slice(0,10))}</span><button class="btn small" onclick="lootDownload('${esc(l.id)}')">下载</button><button class="btn small danger" onclick="App().DeleteLoot('${esc(l.id)}').then(refreshLootList)">删除</button></div>`).join('');
+  el.innerHTML = loot.map(l => `<div style="padding:4px 10px;font-size:12.5px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1">${esc(l.name)}</span><span style="color:var(--muted)">${esc(l.type)}</span><span style="color:var(--muted);font-family:var(--mono)">${esc(l.id.slice(0,10))}</span><button class="btn small" onclick="lootDownload('${esc(l.id)}')">下载</button><button class="btn small danger" onclick="deleteLoot('${esc(l.id)}', '${esc(l.name)}')">删除</button></div>`).join('');
+}
+function deleteLoot(id, name) {
+  return runDangerousAction({ title:'删除战利品', message:`确定永久删除“${esc(name)}”吗？`, okLabel:'删除', action:()=>App().DeleteLoot(id), success:'战利品已删除', refresh:refreshLootList });
 }
 async function lootDownload(lootID) {
   const r = await App().DownloadLoot(lootID).catch(error => ({ error }));
@@ -2970,7 +2988,10 @@ async function refreshCredsList() {
   const el = document.getElementById('creds-list'); if (!el) return;
   const creds = await App().ListCreds().catch(() => []);
   if (!creds.length) { el.innerHTML = '<div style="padding:10px;color:var(--muted)">暂无已保存的凭据。</div>'; return; }
-  el.innerHTML = creds.map(c => `<div style="padding:5px 10px;font-size:12.5px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1;color:var(--info)">${esc(c.username)}</span><span style="flex:1;font-family:var(--mono)">${esc(c.plaintext||c.hash||'')}</span>${c.cracked?'<span style="color:var(--ok)">已破解</span>':''}<button class="btn small danger" onclick="App().DeleteCred('${esc(c.id)}').then(refreshCredsList)">删除</button></div>`).join('');
+  el.innerHTML = creds.map(c => `<div style="padding:5px 10px;font-size:12.5px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1;color:var(--info)">${esc(c.username)}</span><span style="flex:1;font-family:var(--mono)">${esc(c.plaintext||c.hash||'')}</span>${c.cracked?'<span style="color:var(--ok)">已破解</span>':''}<button class="btn small danger" onclick="deleteCredential('${esc(c.id)}', '${esc(c.username)}')">删除</button></div>`).join('');
+}
+function deleteCredential(id, username) {
+  return runDangerousAction({ title:'删除凭据', message:`确定永久删除“${esc(username)}”的凭据记录吗？`, okLabel:'删除', action:()=>App().DeleteCred(id), success:'凭据记录已删除', refresh:refreshCredsList });
 }
 
 // ── Hosts panel ─────────────────────────────────────────────────────────────
@@ -2982,7 +3003,10 @@ async function refreshHostsList() {
   const el = document.getElementById('hosts-list'); if (!el) return;
   const hosts = await App().ListHosts().catch(() => []);
   if (!hosts.length) { el.innerHTML = '<div style="padding:10px;color:var(--muted)">数据库中暂无主机。</div>'; return; }
-  el.innerHTML = hosts.map(h => `<div style="padding:5px 10px;font-size:12.5px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1;color:var(--info)">${esc(h.hostname)}</span><span style="flex:1;color:var(--muted)">${esc(h.os)}</span><span style="color:var(--muted);font-family:var(--mono)">${esc((h.uuid||'').slice(0,8))}</span><span style="color:var(--muted)">${esc(h.firstSeen)}</span><button class="btn small danger" onclick="App().DeleteHost('${esc(h.id)}').then(refreshHostsList)">删除</button></div>`).join('');
+  el.innerHTML = hosts.map(h => `<div style="padding:5px 10px;font-size:12.5px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1;color:var(--info)">${esc(h.hostname)}</span><span style="flex:1;color:var(--muted)">${esc(h.os)}</span><span style="color:var(--muted);font-family:var(--mono)">${esc((h.uuid||'').slice(0,8))}</span><span style="color:var(--muted)">${esc(h.firstSeen)}</span><button class="btn small danger" onclick="deleteHost('${esc(h.id)}', '${esc(h.hostname)}')">删除</button></div>`).join('');
+}
+function deleteHost(id, hostname) {
+  return runDangerousAction({ title:'删除主机', message:`确定永久删除主机“${esc(hostname)}”吗？`, okLabel:'删除', action:()=>App().DeleteHost(id), success:'主机记录已删除', refresh:refreshHostsList });
 }
 
 function openBuildsPanel() {
@@ -3063,8 +3087,11 @@ async function refreshProfilesList() {
   const profs = await App().ListImplantProfiles().catch(() => []);
   const html = !profs?.length
     ? '<div style="padding:10px;color:var(--muted)">暂无已保存的配置档案，请在上方创建。</div>'
-    : profs.map(p => `<div style="padding:5px 10px;font-size:12.5px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1">${esc(p.name)}</span><span style="color:var(--muted)">${esc(p.goos)}/${esc(p.goarch)}</span><span style="color:var(--muted)">${esc(p.format)}</span><span style="color:var(--muted);font-family:var(--mono)">${esc(p.c2Url||'')}</span><button class="btn small" onclick='genFromProfile(${JSON.stringify(p)})'>生成</button><button class="btn small danger" onclick="App().DeleteImplantProfile('${esc(p.name)}').then(refreshProfilesList)">删除</button></div>`).join('');
+    : profs.map(p => `<div style="padding:5px 10px;font-size:12.5px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1">${esc(p.name)}</span><span style="color:var(--muted)">${esc(p.goos)}/${esc(p.goarch)}</span><span style="color:var(--muted)">${esc(p.format)}</span><span style="color:var(--muted);font-family:var(--mono)">${esc(p.c2Url||'')}</span><button class="btn small" onclick='genFromProfile(${JSON.stringify(p)})'>生成</button><button class="btn small danger" onclick="deleteImplantProfile('${esc(p.name)}')">删除</button></div>`).join('');
   targets.forEach(el => el.innerHTML = html);
+}
+function deleteImplantProfile(name) {
+  return runDangerousAction({ title:'删除配置档案', message:`确定永久删除“${esc(name)}”吗？`, okLabel:'删除', action:()=>App().DeleteImplantProfile(name), success:'配置档案已删除', refresh:refreshProfilesList });
 }
 // pinProfiles docks a live profiles list into the bottom console.
 function pinProfiles() {
@@ -3140,7 +3167,10 @@ async function refreshListenerList() {
   const el = document.getElementById('ls-list'); if (!el) return;
   const jobs = await App().ListJobs().catch(() => []);
   if (!jobs?.length) { el.innerHTML = '<div style="color:var(--muted);font-size:12px">暂无活动监听器</div>'; return; }
-  el.innerHTML = jobs.map(j => `<div style="padding:4px 0;font-size:12.5px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)"><span>${esc(j.name)} (${esc(j.protocol)} :${j.port})</span><button class="btn small danger" onclick="App().KillJob(${j.id}).then(refreshListenerList)">终止</button></div>`).join('');
+  el.innerHTML = jobs.map(j => `<div style="padding:4px 0;font-size:12.5px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)"><span>${esc(j.name)} (${esc(j.protocol)} :${j.port})</span><button class="btn small danger" onclick="stopListener(${j.id}, '${esc(j.name)}')">终止</button></div>`).join('');
+}
+function stopListener(id, name) {
+  return runDangerousAction({ title:'终止监听器', message:`确定终止监听器“${esc(name)}”（Job ${id}）吗？`, okLabel:'终止', action:()=>App().KillJob(id), success:'监听器已终止', refresh:refreshListenerList });
 }
 
 function openGeneratePanel() {

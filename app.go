@@ -312,6 +312,7 @@ func (a *App) KillSession(sessionID string) error {
 		Force:   false,
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
+	a.logDestructive("session-kill", sessionID, err)
 	return err
 }
 
@@ -444,6 +445,7 @@ func (a *App) KillRemoteProcess(sessionID string, pid uint32) error {
 		Force:   false,
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
+	a.logDestructive("process-kill", sessionID, err)
 	return err
 }
 
@@ -921,6 +923,7 @@ func (a *App) RemoveFile(sessionID, path string) error {
 		Path:    path,
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
+	a.logDestructive("file-remove", sessionID, err)
 	return err
 }
 
@@ -1380,6 +1383,7 @@ func (a *App) StopRportFwd(sessionID string, id uint32) error {
 		ID:      id,
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
+	a.logDestructive("reverse-forward-stop", sessionID, err)
 	return err
 }
 
@@ -1477,6 +1481,7 @@ func (a *App) DeleteHost(hostID string) error {
 		return err
 	}
 	_, err = client.RPC.HostRm(a.ctx, &clientpb.Host{ID: hostID})
+	a.logDestructive("host-delete", hostID, err)
 	return err
 }
 
@@ -1523,6 +1528,7 @@ func (a *App) DeleteCred(id string) error {
 	_, err = client.RPC.CredsRm(a.ctx, &clientpb.Credentials{
 		Credentials: []*clientpb.Credential{{ID: id}},
 	})
+	a.logDestructive("credential-delete", id, err)
 	return err
 }
 
@@ -1556,6 +1562,7 @@ func (a *App) RemoveWebsite(name string) error {
 		return err
 	}
 	_, err = client.RPC.WebsiteRemove(a.ctx, &clientpb.Website{Name: name})
+	a.logDestructive("website-delete", name, err)
 	return err
 }
 
@@ -1688,6 +1695,7 @@ func (a *App) WGStopPortForward(sessionID string, id int) error {
 		ID:      int32(id),
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
+	a.logDestructive("wireguard-forward-stop", sessionID, err)
 	return err
 }
 
@@ -1712,6 +1720,7 @@ func (a *App) WGStopSocks(sessionID string, id int) error {
 		ID:      int32(id),
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
+	a.logDestructive("wireguard-socks-stop", sessionID, err)
 	return err
 }
 
@@ -1746,6 +1755,7 @@ func (a *App) DeleteLoot(lootID string) error {
 		return err
 	}
 	_, err = client.RPC.LootRm(a.ctx, &clientpb.Loot{ID: lootID})
+	a.logDestructive("loot-delete", lootID, err)
 	return err
 }
 
@@ -1854,6 +1864,7 @@ func (a *App) DeleteBuild(name string) error {
 		return err
 	}
 	_, err = client.RPC.DeleteImplantBuild(a.ctx, &clientpb.DeleteReq{Name: name})
+	a.logDestructive("build-delete", name, err)
 	return err
 }
 
@@ -1913,6 +1924,7 @@ func (a *App) KillBeacon(beaconID string) error {
 		return err
 	}
 	_, err = client.RPC.RmBeacon(a.ctx, &clientpb.Beacon{ID: beaconID})
+	a.logDestructive("beacon-kill", beaconID, err)
 	return err
 }
 
@@ -1970,6 +1982,7 @@ func (a *App) KillJob(jobID uint32) error {
 		return err
 	}
 	_, err = client.RPC.KillJob(a.ctx, &clientpb.KillJobReq{ID: jobID})
+	a.logDestructive("job-kill", fmt.Sprintf("%d", jobID), err)
 	return err
 }
 
@@ -2286,6 +2299,7 @@ func (a *App) StopPivotListener(sessionID string, pivotID uint32) error {
 		ID:      pivotID,
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
+	a.logDestructive("pivot-stop", sessionID, err)
 	return err
 }
 
@@ -2336,6 +2350,7 @@ func (a *App) StopSocksProxy(sessionID string) error {
 	}
 	h.listener.Close()
 	h.cancel()
+	a.logDestructive("socks-stop", sessionID, nil)
 	return nil
 }
 
@@ -2476,6 +2491,7 @@ func (a *App) RemovePortForward(sessionID string, localPort int) error {
 			h.listener.Close()
 			h.cancel()
 			a.portfwds[sessionID] = append(list[:i], list[i+1:]...)
+			a.logDestructive("port-forward-stop", sessionID, nil)
 			return nil
 		}
 	}
@@ -2852,6 +2868,7 @@ func (a *App) StopService(sessionID, hostname, serviceName string) error {
 		ServiceInfo: &sliverpb.ServiceInfoReq{ServiceName: serviceName, Hostname: hostname},
 		Request:     &commonpb.Request{SessionID: sessionID},
 	})
+	a.logDestructive("service-stop", sessionID, err)
 	return err
 }
 
@@ -2864,6 +2881,7 @@ func (a *App) RemoveService(sessionID, hostname, serviceName string) error {
 		ServiceInfo: &sliverpb.ServiceInfoReq{ServiceName: serviceName, Hostname: hostname},
 		Request:     &commonpb.Request{SessionID: sessionID},
 	})
+	a.logDestructive("service-remove", sessionID, err)
 	return err
 }
 
@@ -3000,6 +3018,7 @@ func (a *App) DeleteImplantProfile(name string) error {
 		return err
 	}
 	_, err = client.RPC.DeleteImplantProfile(a.ctx, &clientpb.DeleteReq{Name: name})
+	a.logDestructive("implant-profile-delete", name, err)
 	return err
 }
 

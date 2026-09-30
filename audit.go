@@ -65,6 +65,16 @@ func (al *auditLogger) log(action, target, detail string) {
 	f.Write(append(b, '\n'))
 }
 
+// logDestructive records only the target and outcome. Backend error text is
+// excluded because it can contain paths, command arguments, or credentials.
+func (a *App) logDestructive(action, target string, err error) {
+	result := "success"
+	if err != nil {
+		result = "failed"
+	}
+	a.audit.log(action, target, result)
+}
+
 // configDir returns the per-user GUI state directory (~/.sliver-gui),
 // falling back to the working dir if the home dir can't be resolved.
 func configDir() string {
