@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"testing"
+	"time"
 
 	"github.com/bishopfox/sliver/protobuf/clientpb"
 	"github.com/bishopfox/sliver/protobuf/sliverpb"
@@ -111,5 +113,29 @@ func TestDecodeDownload(t *testing.T) {
 	got, err := decodeDownload(&sliverpb.Download{Encoder: "gzip", Data: buf.Bytes()})
 	if err != nil || string(got) != "compressed payload" {
 		t.Errorf("gzip decode = (%q,%v), want (compressed payload,nil)", got, err)
+	}
+}
+
+func TestTransferLifecycle(t *testing.T) {
+	app := NewApp()
+	app.ctx = context.Background()
+	ctx, done, err := app.beginTransfer("transfer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := app.beginTransfer("transfer-1"); err == nil {
+		t.Fatal("expected duplicate transfer ID to fail")
+	}
+	if !app.CancelTransfer("transfer-1") {
+		t.Fatal("expected active transfer to be cancelled")
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("transfer context was not cancelled")
+	}
+	done()
+	if app.CancelTransfer("transfer-1") {
+		t.Fatal("completed transfer should not remain registered")
 	}
 }

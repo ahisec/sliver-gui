@@ -1373,14 +1373,14 @@ async function dispatchCmd(kind, id, raw) {
       // Two args = CLI style download to a specific local path; one arg = save dialog.
       const r = args.length >= 2
         ? await App().DownloadFileTo(id, args[0], args[1])
-        : await App().DownloadFile(id, args[0]);
+        : await runFileTransfer('download', id, args[0]);
       return appendOut(id, r.error ? `[error] ${r.error}` : `[+] ${args[0]} -> ${r.path} (${fmtSize(r.bytes)})`, r.error?'err':'out');
     }
     case 'upload': {
       // upload <local> <remote> (CLI) | upload [remote] (open dialog for local)
       const r = args.length >= 2
         ? await App().UploadFileFrom(id, args[0], args[1])
-        : await App().UploadFile(id, args[0] || '');
+        : await runFileTransfer('upload', id, args[0] || '');
       return appendOut(id, r.error ? `[error] ${r.error}` : `[+] uploaded -> ${r.path} (${fmtSize(r.bytes)})`, r.error?'err':'out');
     }
     case 'screenshot': {
@@ -1922,13 +1922,16 @@ function pollBeaconResult(id, taskId, localTaskId, tries = 0) {
 
 async function cancelTask(taskId) {
   const task = taskStore.get(taskId);
-  if (!task?.canCancel || !task.remoteTaskId) return;
-  const confirmed = await uiConfirm(`取消“${esc(task.title)}”在 Teamserver 中的排队任务？`, {
+  if (!task?.canCancel) return;
+  const confirmed = await uiConfirm(`取消“${esc(task.title)}”？`, {
     title: '取消任务', okLabel: '取消任务', danger: true,
   });
   if (!confirmed) return;
-  taskStore.update(taskId, { canCancel: false, summary: '正在请求 Teamserver 取消任务' });
-  const error = await App().CancelBeaconTask(task.remoteTaskId).then(() => null).catch(error => error);
+  taskStore.update(taskId, { canCancel: false, summary: '正在请求取消任务' });
+  const cancelAction = taskActions.get(taskId)?.cancel;
+  const error = await (cancelAction
+    ? cancelAction().then(cancelled => cancelled ? null : new Error('任务已经结束')).catch(error => error)
+    : App().CancelBeaconTask(task.remoteTaskId).then(() => null).catch(error => error));
   if (error) {
     taskStore.update(taskId, { canCancel: true, summary: RpcErrors.safeRpcErrorMessage(error, '取消任务失败') });
     toastRpcError(error, '取消任务失败');
@@ -1937,6 +1940,7 @@ async function cancelTask(taskId) {
   const poll = beaconPolls.get(taskId);
   if (poll) poll.cancelled = true;
   beaconPolls.delete(taskId);
+  taskActions.delete(taskId);
   taskStore.update(taskId, { status: 'cancelled', canCancel: false, summary: '已由操作员取消' });
   toast('ok', '任务已取消');
 }
@@ -1947,6 +1951,36 @@ async function retryTask(taskId) {
   if (!task?.canRetry || !action) return;
   taskStore.update(taskId, { canRetry: false });
   await action();
+}
+
+async function runFileTransfer(direction, sessionID, remotePath) {
+  const transferID = `transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const target = openTabs[sessionID]?.obj?.hostname || sessionID.slice(0, 8);
+  const title = direction === 'download' ? '下载文件' : '上传文件';
+  const task = taskStore.create({
+    id: transferID, type: `file-${direction}`, title, target, agentId: sessionID,
+    status: 'running', canCancel: true,
+    summary: direction === 'download' ? `正在等待目标返回：${remotePath}` : '正在选择并发送本地文件',
+    policy: 'Sliver 文件 RPC 提供阶段状态但不提供字节流百分比；活动请求可真实取消。',
+  });
+  taskActions.set(task.id, { cancel: () => App().CancelTransfer(transferID) });
+  const call = direction === 'download'
+    ? App().DownloadFileTracked(transferID, sessionID, remotePath)
+    : App().UploadFileTracked(transferID, sessionID, remotePath);
+  const result = await call.catch(error => ({ error: String(error) }));
+  taskActions.delete(task.id);
+  if (taskStore.get(task.id)?.status === 'cancelled') return result;
+  if (result.error) {
+    const info = rpcError(result.error, `${title}失败`);
+    const cancelled = info.cancelled || /context canceled/i.test(String(result.error));
+    taskStore.update(task.id, {
+      status: cancelled ? 'cancelled' : 'failed', canCancel: false,
+      summary: cancelled ? '传输已取消' : RpcErrors.safeRpcErrorMessage(result.error, `${title}失败`),
+    });
+  } else {
+    taskStore.update(task.id, { status: 'success', canCancel: false, summary: `传输完成，共 ${fmtSize(result.bytes)}` });
+  }
+  return result;
 }
 
 async function showTasks(id) {

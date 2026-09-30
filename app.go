@@ -33,24 +33,27 @@ type App struct {
 
 	// Advanced tunneling state (SOCKS5 + port forwarding).
 	// Guarded by advMu, NOT mu, so we never deadlock with requireClient().
-	advMu    sync.Mutex
-	socks    map[string]*socksProxyHandle // sessionID -> active socks proxy
-	portfwds map[string][]*portfwdHandle  // sessionID -> active port forwards
-	shells   map[string]*shellHandle      // tunnelID -> interactive shell
+	advMu      sync.Mutex
+	socks      map[string]*socksProxyHandle // sessionID -> active socks proxy
+	portfwds   map[string][]*portfwdHandle  // sessionID -> active port forwards
+	shells     map[string]*shellHandle      // tunnelID -> interactive shell
+	transferMu sync.Mutex
+	transfers  map[string]context.CancelFunc
 
 	audit *auditLogger // operator action log (~/.sliver-gui/audit.log)
 }
 
 func NewApp() *App {
 	return &App{
-		socks:    map[string]*socksProxyHandle{},
-		portfwds: map[string][]*portfwdHandle{},
-		shells:   map[string]*shellHandle{},
-		audit:    newAuditLogger(),
+		socks:     map[string]*socksProxyHandle{},
+		portfwds:  map[string][]*portfwdHandle{},
+		shells:    map[string]*shellHandle{},
+		transfers: map[string]context.CancelFunc{},
+		audit:     newAuditLogger(),
 	}
 }
 
-func (a *App) startup(ctx context.Context)  { a.ctx = ctx }
+func (a *App) startup(ctx context.Context) { a.ctx = ctx }
 func (a *App) shutdown(ctx context.Context) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -930,11 +933,25 @@ type TransferResult struct {
 }
 
 func (a *App) DownloadFile(sessionID, remotePath string) TransferResult {
+	return a.downloadFile(a.ctx, sessionID, remotePath)
+}
+
+// DownloadFileTracked runs a download under a cancellable client transfer ID.
+func (a *App) DownloadFileTracked(transferID, sessionID, remotePath string) TransferResult {
+	ctx, done, err := a.beginTransfer(transferID)
+	if err != nil {
+		return TransferResult{Error: err.Error()}
+	}
+	defer done()
+	return a.downloadFile(ctx, sessionID, remotePath)
+}
+
+func (a *App) downloadFile(ctx context.Context, sessionID, remotePath string) TransferResult {
 	client, err := a.requireClient()
 	if err != nil {
 		return TransferResult{Error: err.Error()}
 	}
-	resp, err := client.RPC.Download(a.ctx, &sliverpb.DownloadReq{
+	resp, err := client.RPC.Download(ctx, &sliverpb.DownloadReq{
 		Path:             remotePath,
 		RestrictedToFile: true,
 		Request:          &commonpb.Request{SessionID: sessionID},
@@ -974,6 +991,20 @@ func decodeDownload(resp *sliverpb.Download) ([]byte, error) {
 }
 
 func (a *App) UploadFile(sessionID, remotePath string) TransferResult {
+	return a.uploadFile(a.ctx, sessionID, remotePath)
+}
+
+// UploadFileTracked runs an upload under a cancellable client transfer ID.
+func (a *App) UploadFileTracked(transferID, sessionID, remotePath string) TransferResult {
+	ctx, done, err := a.beginTransfer(transferID)
+	if err != nil {
+		return TransferResult{Error: err.Error()}
+	}
+	defer done()
+	return a.uploadFile(ctx, sessionID, remotePath)
+}
+
+func (a *App) uploadFile(ctx context.Context, sessionID, remotePath string) TransferResult {
 	client, err := a.requireClient()
 	if err != nil {
 		return TransferResult{Error: err.Error()}
@@ -992,7 +1023,7 @@ func (a *App) UploadFile(sessionID, remotePath string) TransferResult {
 	if target == "" {
 		target = filepath.Base(localPath)
 	}
-	_, err = client.RPC.Upload(a.ctx, &sliverpb.UploadReq{
+	_, err = client.RPC.Upload(ctx, &sliverpb.UploadReq{
 		Path:    target,
 		Data:    data,
 		Request: &commonpb.Request{SessionID: sessionID},
@@ -1001,6 +1032,37 @@ func (a *App) UploadFile(sessionID, remotePath string) TransferResult {
 		return TransferResult{Error: err.Error()}
 	}
 	return TransferResult{Path: target, Bytes: int64(len(data))}
+}
+
+func (a *App) beginTransfer(transferID string) (context.Context, func(), error) {
+	if strings.TrimSpace(transferID) == "" {
+		return nil, nil, fmt.Errorf("transfer ID is required")
+	}
+	a.transferMu.Lock()
+	defer a.transferMu.Unlock()
+	if _, exists := a.transfers[transferID]; exists {
+		return nil, nil, fmt.Errorf("transfer %s is already active", transferID)
+	}
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.transfers[transferID] = cancel
+	return ctx, func() {
+		a.transferMu.Lock()
+		delete(a.transfers, transferID)
+		a.transferMu.Unlock()
+		cancel()
+	}, nil
+}
+
+// CancelTransfer cancels an active upload or download RPC.
+func (a *App) CancelTransfer(transferID string) bool {
+	a.transferMu.Lock()
+	cancel := a.transfers[transferID]
+	a.transferMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
 }
 
 // UploadFileFrom uploads a specific local file (on the operator machine) to a
@@ -2940,7 +3002,6 @@ func (a *App) DeleteImplantProfile(name string) error {
 	_, err = client.RPC.DeleteImplantProfile(a.ctx, &clientpb.DeleteReq{Name: name})
 	return err
 }
-
 
 // ─── Beacon Task Execution ───────────────────────────────────────────────────
 //
