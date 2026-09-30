@@ -41,6 +41,24 @@ func TestSchemeOf(t *testing.T) {
 	}
 }
 
+func TestJoinRemotePath(t *testing.T) {
+	cases := []struct {
+		dir  string
+		name string
+		want string
+	}{
+		{dir: ".", name: "report.txt", want: "report.txt"},
+		{dir: "/tmp", name: "report.txt", want: "/tmp/report.txt"},
+		{dir: "/tmp/", name: "report.txt", want: "/tmp/report.txt"},
+		{dir: `C:\Windows\Temp`, name: "report.txt", want: `C:\Windows\Temp\report.txt`},
+	}
+	for _, tc := range cases {
+		if got := joinRemotePath(tc.dir, tc.name); got != tc.want {
+			t.Errorf("joinRemotePath(%q, %q) = %q, want %q", tc.dir, tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestFormatFromString(t *testing.T) {
 	cases := map[string]clientpb.OutputFormat{
 		"shared":    clientpb.OutputFormat_SHARED_LIB,
@@ -113,6 +131,29 @@ func TestDecodeDownload(t *testing.T) {
 	got, err := decodeDownload(&sliverpb.Download{Encoder: "gzip", Data: buf.Bytes()})
 	if err != nil || string(got) != "compressed payload" {
 		t.Errorf("gzip decode = (%q,%v), want (compressed payload,nil)", got, err)
+	}
+}
+
+func TestDownloadDefaultName(t *testing.T) {
+	if got := downloadDefaultName(`C:\\Users\\alice\\Documents`, &sliverpb.Download{IsDir: true}); got != "Documents.tar.gz" {
+		t.Fatalf("directory name = %q, want Documents.tar.gz", got)
+	}
+	if got := downloadDefaultName(`/tmp/report.txt`, &sliverpb.Download{}); got != "report.txt" {
+		t.Fatalf("file name = %q, want report.txt", got)
+	}
+}
+
+func TestDecodeCommandOutput(t *testing.T) {
+	utf8Text := []byte("中文输出")
+	if got := decodeCommandOutput(utf8Text, "windows"); got != "中文输出" {
+		t.Fatalf("valid UTF-8 changed: %q", got)
+	}
+	gbkText := []byte{0xd6, 0xd0, 0xce, 0xc4, 0xca, 0xe4, 0xb3, 0xf6}
+	if got := decodeCommandOutput(gbkText, "windows"); got != "中文输出" {
+		t.Fatalf("GBK decode = %q, want 中文输出", got)
+	}
+	if got := decodeCommandOutput(gbkText, "linux"); got == "中文输出" {
+		t.Fatal("non-Windows output must not assume GBK")
 	}
 }
 

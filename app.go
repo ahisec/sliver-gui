@@ -15,11 +15,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bishopfox/sliver/protobuf/clientpb"
 	"github.com/bishopfox/sliver/protobuf/commonpb"
 	"github.com/bishopfox/sliver/protobuf/sliverpb"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 	"google.golang.org/protobuf/proto"
 
 	"sliver-gui/internal/sliverclient"
@@ -284,6 +287,7 @@ type SessionView struct {
 	RemoteAddr  string `json:"remoteAddress"`
 	LastCheckin string `json:"lastCheckin"`
 	PID         int32  `json:"pid"`
+	ProcessName string `json:"processName"`
 	IsDead      bool   `json:"isDead"`
 }
 
@@ -315,6 +319,7 @@ func sessionToView(s *clientpb.Session) SessionView {
 		RemoteAddr:  s.RemoteAddress,
 		LastCheckin: time.Unix(s.LastCheckin, 0).Format("15:04:05"),
 		PID:         s.PID,
+		ProcessName: filepath.Base(strings.ReplaceAll(s.Filename, "\\", "/")),
 		IsDead:      s.IsDead,
 	}
 }
@@ -382,10 +387,23 @@ func (a *App) ExecuteCommand(sessionID, command string) ExecResult {
 		return ExecResult{Error: err.Error()}
 	}
 	return ExecResult{
-		Stdout: string(resp.Stdout),
-		Stderr: string(resp.Stderr),
+		Stdout: decodeCommandOutput(resp.Stdout, sessionOS),
+		Stderr: decodeCommandOutput(resp.Stderr, sessionOS),
 		Status: resp.Status,
 	}
+}
+
+// decodeCommandOutput preserves UTF-8 output and falls back to the common
+// Windows Simplified Chinese console code page for non-UTF-8 byte streams.
+func decodeCommandOutput(data []byte, targetOS string) string {
+	if len(data) == 0 || utf8.Valid(data) || !strings.Contains(strings.ToLower(targetOS), "windows") {
+		return string(data)
+	}
+	decoded, _, err := transform.Bytes(simplifiedchinese.GBK.NewDecoder(), data)
+	if err != nil {
+		return string(data)
+	}
+	return string(decoded)
 }
 
 // RunExecute runs a program on the target directly (Sliver's `execute`), without
@@ -404,7 +422,16 @@ func (a *App) RunExecute(sessionID, path string, args []string) ExecResult {
 	if err != nil {
 		return ExecResult{Error: err.Error()}
 	}
-	return ExecResult{Stdout: string(resp.Stdout), Stderr: string(resp.Stderr), Status: resp.Status}
+	sessionOS := ""
+	if sessions, listErr := client.ListSessions(a.ctx); listErr == nil {
+		for _, session := range sessions {
+			if session.ID == sessionID {
+				sessionOS = session.OS
+				break
+			}
+		}
+	}
+	return ExecResult{Stdout: decodeCommandOutput(resp.Stdout, sessionOS), Stderr: decodeCommandOutput(resp.Stderr, sessionOS), Status: resp.Status}
 }
 
 // ─── Screenshot ──────────────────────────────────────────────────────────────
@@ -730,10 +757,11 @@ type LsResult struct {
 }
 
 type FileInfo struct {
-	Name  string `json:"name"`
-	IsDir bool   `json:"isDir"`
-	Size  int64  `json:"size"`
-	Mode  string `json:"mode"`
+	Name    string `json:"name"`
+	IsDir   bool   `json:"isDir"`
+	Size    int64  `json:"size"`
+	Mode    string `json:"mode"`
+	ModTime int64  `json:"modTime"`
 }
 
 func (a *App) ListFiles(sessionID, path string) LsResult {
@@ -753,7 +781,7 @@ func (a *App) ListFiles(sessionID, path string) LsResult {
 	}
 	files := make([]FileInfo, 0, len(resp.Files))
 	for _, f := range resp.Files {
-		files = append(files, FileInfo{Name: f.Name, IsDir: f.IsDir, Size: f.Size, Mode: f.Mode})
+		files = append(files, FileInfo{Name: f.Name, IsDir: f.IsDir, Size: f.Size, Mode: f.Mode, ModTime: f.ModTime})
 	}
 	return LsResult{Path: resp.Path, Files: files}
 }
@@ -980,7 +1008,7 @@ func (a *App) downloadFile(ctx context.Context, sessionID, remotePath string) Tr
 	}
 	resp, err := client.RPC.Download(ctx, &sliverpb.DownloadReq{
 		Path:             remotePath,
-		RestrictedToFile: true,
+		RestrictedToFile: false,
 		Request:          &commonpb.Request{SessionID: sessionID},
 	})
 	if err != nil {
@@ -990,8 +1018,9 @@ func (a *App) downloadFile(ctx context.Context, sessionID, remotePath string) Tr
 	if err != nil {
 		return TransferResult{Error: "decode: " + err.Error()}
 	}
+	defaultName := downloadDefaultName(remotePath, resp)
 	savePath, err := a.safeSaveFileDialog(runtime.SaveDialogOptions{
-		DefaultFilename: filepath.Base(remotePath),
+		DefaultFilename: defaultName,
 		Title:           "Save downloaded file",
 	})
 	if err != nil || savePath == "" {
@@ -1001,6 +1030,21 @@ func (a *App) downloadFile(ctx context.Context, sessionID, remotePath string) Tr
 		return TransferResult{Error: err.Error()}
 	}
 	return TransferResult{Path: savePath, Bytes: int64(len(data))}
+}
+
+func downloadDefaultName(remotePath string, resp *sliverpb.Download) string {
+	path := remotePath
+	if resp != nil && strings.TrimSpace(resp.Path) != "" {
+		path = resp.Path
+	}
+	name := filepath.Base(strings.ReplaceAll(strings.TrimRight(path, "/\\"), "\\", "/"))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		name = "download"
+	}
+	if resp != nil && resp.IsDir && !strings.HasSuffix(strings.ToLower(name), ".tgz") && !strings.HasSuffix(strings.ToLower(name), ".tar.gz") {
+		name += ".tar.gz"
+	}
+	return name
 }
 
 // decodeDownload returns the file bytes from a Download response, transparently
@@ -1029,6 +1073,54 @@ func (a *App) UploadFileTracked(transferID, sessionID, remotePath string) Transf
 	}
 	defer done()
 	return a.uploadFile(ctx, sessionID, remotePath)
+}
+
+// UploadFileToDirectoryTracked selects a local file and uploads it beneath the
+// supplied remote directory using the local base name.
+func (a *App) UploadFileToDirectoryTracked(transferID, sessionID, remoteDir string) TransferResult {
+	ctx, done, err := a.beginTransfer(transferID)
+	if err != nil {
+		return TransferResult{Error: err.Error()}
+	}
+	defer done()
+	return a.uploadFileToDirectory(ctx, sessionID, remoteDir)
+}
+
+func (a *App) uploadFileToDirectory(ctx context.Context, sessionID, remoteDir string) TransferResult {
+	client, err := a.requireClient()
+	if err != nil {
+		return TransferResult{Error: err.Error()}
+	}
+	localPath, err := a.safeOpenFileDialog(runtime.OpenDialogOptions{Title: "选择要上传的文件"})
+	if err != nil || localPath == "" {
+		return TransferResult{Error: "upload cancelled"}
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return TransferResult{Error: err.Error()}
+	}
+	target := joinRemotePath(remoteDir, filepath.Base(localPath))
+	_, err = client.RPC.Upload(ctx, &sliverpb.UploadReq{
+		Path:    target,
+		Data:    data,
+		Request: &commonpb.Request{SessionID: sessionID},
+	})
+	if err != nil {
+		return TransferResult{Error: err.Error()}
+	}
+	return TransferResult{Path: target, Bytes: int64(len(data))}
+}
+
+func joinRemotePath(dir, name string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || dir == "." {
+		return name
+	}
+	separator := "/"
+	if strings.Contains(dir, `\`) && !strings.Contains(dir, "/") {
+		separator = `\`
+	}
+	return strings.TrimRight(dir, `/\`) + separator + name
 }
 
 func (a *App) uploadFile(ctx context.Context, sessionID, remotePath string) TransferResult {
@@ -1127,7 +1219,7 @@ func (a *App) DownloadFileTo(sessionID, remotePath, localPath string) TransferRe
 	}
 	resp, err := client.RPC.Download(a.ctx, &sliverpb.DownloadReq{
 		Path:             remotePath,
-		RestrictedToFile: true,
+		RestrictedToFile: false,
 		Request:          &commonpb.Request{SessionID: sessionID},
 	})
 	if err != nil {
@@ -1136,6 +1228,9 @@ func (a *App) DownloadFileTo(sessionID, remotePath, localPath string) TransferRe
 	data, err := decodeDownload(resp)
 	if err != nil {
 		return TransferResult{Error: "decode: " + err.Error()}
+	}
+	if resp.IsDir && !strings.HasSuffix(strings.ToLower(localPath), ".tgz") && !strings.HasSuffix(strings.ToLower(localPath), ".tar.gz") {
+		localPath += ".tar.gz"
 	}
 	if err := os.WriteFile(localPath, data, 0644); err != nil {
 		return TransferResult{Error: "write local file: " + err.Error()}
@@ -1918,6 +2013,7 @@ type BeaconView struct {
 	Transport   string `json:"transport"`
 	RemoteAddr  string `json:"remoteAddress"`
 	PID         int32  `json:"pid"`
+	ProcessName string `json:"processName"`
 	Interval    int64  `json:"interval"`
 	Jitter      int64  `json:"jitter"`
 	LastCheckin string `json:"lastCheckin"`
@@ -1946,6 +2042,7 @@ func (a *App) ListBeacons() ([]BeaconView, error) {
 			Transport:   b.Transport,
 			RemoteAddr:  b.RemoteAddress,
 			PID:         b.PID,
+			ProcessName: filepath.Base(strings.ReplaceAll(b.Filename, "\\", "/")),
 			Interval:    b.Interval,
 			Jitter:      b.Jitter,
 			LastCheckin: time.Unix(b.LastCheckin, 0).Format("15:04:05"),

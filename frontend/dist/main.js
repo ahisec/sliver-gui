@@ -443,8 +443,9 @@ function renderTable() {
     const tr = document.createElement('tr'); tr.dataset.id = o.id; tr.dataset.kind = kind;
     if (isPrivileged(o) && !o.isDead) tr.classList.add('row-priv');
     const typeCls = kind === 'session' ? 'type-session' : 'type-beacon';
-    const remoteIP = o.remoteAddress ? o.remoteAddress.split(':')[0] : '-';
-    tr.innerHTML = `<td class="${typeCls}">${kind === 'session' ? '会话' : '信标'}</td><td>${esc(o.name||o.id.slice(0,8))}</td><td>${esc(o.hostname)}</td>${userCell(o)}<td>${esc(remoteIP)}</td><td>${esc(o.os)}/${esc(o.arch)}</td><td>${o.pid}</td><td>${esc(o.transport)}</td><td>${esc(o.lastCheckin)}</td><td class="${o.isDead?'status-dead':'status-alive'}">${o.isDead?'离线':'在线'}</td>`;
+    const remoteIP = o.remoteAddress ? o.remoteAddress.replace(/^\[([^\]]+)\](?::\d+)?$/, '$1').replace(/:\d+$/, '') : '-';
+    const process = o.processName ? `<small class="agent-process-name" title="${esc(o.processName)}">${esc(o.processName)}</small>` : '';
+    tr.innerHTML = `<td class="${typeCls}">${kind === 'session' ? '会话' : '信标'}</td><td>${esc(o.name||o.id.slice(0,8))}</td><td>${esc(o.hostname)}</td>${userCell(o)}<td title="Teamserver 看到的连接端地址">${esc(remoteIP)}</td><td>${esc(o.os)}/${esc(o.arch)}</td><td><span>${o.pid}</span>${process}</td><td>${esc(o.transport)}</td><td>${esc(o.lastCheckin)}</td><td class="${o.isDead?'status-dead':'status-alive'}">${o.isDead?'离线':'在线'}</td>`;
     tr.addEventListener('dblclick', () => openInteract(kind, o));
     tr.addEventListener('contextmenu', e => showCtx(e, kind, o));
     body.appendChild(tr);
@@ -835,9 +836,9 @@ function showCtx(e, kind, obj) {
   ctxMenu.innerHTML = `<div class="ctx-agent"><strong>${esc(obj.hostname || obj.name || obj.id.slice(0,8))}</strong><span>${session ? '实时会话' : '异步信标'}</span></div>
     ${item('overview','主机概览')}${item('interact', session ? '打开工作区' : '打开信标工作区')}
     <div class="ctx-divider"></div>
-    ${session ? `${windows ? item('screenshot','截取屏幕') : ''}${item('network','网络信息')}${item('files','文件浏览器')}${item('upload','上传文件')}${item('processes','进程浏览器')}${windows ? item('migrate','进程迁移') + item('integrity','检查完整性级别') : ''}` : '<div class="ctx-hint">实时浏览和主机操作需使用 Session</div>'}
+    ${session ? `${item('spawn','生成新会话')}${windows ? item('screenshot','截取屏幕') : ''}${item('network','网络信息')}${item('files','文件浏览器')}${item('upload','上传文件')}${item('processes','进程浏览器')}${windows ? item('integrity','检查完整性级别') : ''}` : '<div class="ctx-hint">实时浏览和主机操作需使用 Session</div>'}
     <div class="ctx-divider"></div>
-    ${session ? item('infrastructure','网络基础设施') + item('automation','自动化脚本') : ''}${item('copy-summary','复制目标摘要')}${item('copy-id','复制 ID')}${item('copy-host','复制主机名')}${item('copy-user','复制用户名')}${item('copy-address','复制地址')}
+    ${session ? item('infrastructure','网络基础设施') + item('automation','自动化脚本') : ''}${item('copy-summary','复制目标摘要')}
     ${session ? item('rename','重命名') : ''}<div class="ctx-divider"></div>${item('kill','终止', {danger:true})}`;
   ctxMenu.style.left = Math.max(8, Math.min(e.clientX, window.innerWidth-230))+'px';
   ctxMenu.style.top = Math.max(8, Math.min(e.clientY, window.innerHeight-Math.min(560, ctxMenu.scrollHeight || 560)))+'px';
@@ -856,7 +857,7 @@ ctxMenu.addEventListener('click', async event => {
   if (action === 'files') return openFileBrowser(obj.id);
   if (action === 'upload') return uploadFromContext(obj);
   if (action === 'processes') return openProcessBrowser(obj.id);
-  if (action === 'migrate') return openMigrateDialog(obj.id);
+  if (action === 'spawn') return openSpawnDialog(obj);
   if (action === 'infrastructure') { await openInfrastructurePanel(); const select = document.getElementById('infra-session-filter'); if (select) { select.value = obj.id; select.dispatchEvent(new Event('change')); } return; }
   if (action === 'automation') { await openScriptsPanel(); const select = document.getElementById('scr-session'); if (select) select.value = obj.id; return; }
   if (action.startsWith('copy-')) return copyAgentValue(action, kind, obj);
@@ -893,7 +894,7 @@ async function killContextAgent(kind, obj) {
 }
 
 function openAgentOverview(kind, obj) {
-  const rows = [['类型',kind === 'session' ? '实时会话' : '异步信标'],['名称',obj.name || '-'],['主机名',obj.hostname || '-'],['用户名',obj.username || '-'],['系统',`${obj.os || '-'} / ${obj.arch || '-'}`],['PID',obj.pid || '-'],['传输',obj.transport || '-'],['远程地址',obj.remoteAddress || '-'],['最近签到',obj.lastCheckin || '-']];
+  const rows = [['类型',kind === 'session' ? '实时会话' : '异步信标'],['名称',obj.name || '-'],['主机名',obj.hostname || '-'],['用户名',obj.username || '-'],['系统',`${obj.os || '-'} / ${obj.arch || '-'}`],['当前进程',`${obj.processName || '-'} (PID ${obj.pid || '-'})`],['传输',obj.transport || '-'],['连接来源',obj.remoteAddress || '-'],['地址说明','该值是 Teamserver 看到的连接端；反向代理场景需服务端链路支持才能获得公网来源 IP'],['最近签到',obj.lastCheckin || '-']];
   if (kind === 'beacon') rows.push(['下次预计签到',obj.nextCheckin || '-']);
   openViewPanel('_agent-overview', `主机概览 - ${obj.hostname || obj.id.slice(0,8)}`, `<div class="agent-overview">${rows.map(([label,value]) => `<div><span>${label}</span><strong>${esc(value)}</strong></div>`).join('')}</div>`);
 }
@@ -938,6 +939,23 @@ async function openMigrateDialog(sessionID, initialPID = '') {
   if (!profile) return;
   if (!(await uiConfirm(`确认将当前会话迁移到 PID ${pid}？此操作会使用配置档案“${esc(profile)}”构建载荷。`, {title:'确认进程迁移',okLabel:'迁移',danger:true}))) return;
   await App().Migrate(sessionID, Number(pid), profile).then(() => toast('ok', `已提交迁移到 PID ${pid}`)).catch(error => toastRpcError(error, '进程迁移失败'));
+}
+
+async function openSpawnDialog(obj) {
+  const profiles = await App().ListImplantProfiles().catch(error => ({ error }));
+  if (profiles.error) return toastRpcError(profiles.error, '读取植入体配置档案失败');
+  const compatible = profiles.filter(profile => !profile.goos || profile.goos === obj.os);
+  const choices = compatible.length ? compatible : profiles;
+  if (!choices.length) return toast('info', '请先创建植入体配置档案');
+  const profileName = await uiSelectDialog('选择用于在当前主机生成新回连的配置档案：', choices.map(profile => ({value:profile.name,label:`${profile.name} · ${profile.goos}/${profile.goarch} · ${profile.beacon ? '信标' : '会话'}`})), { title:'生成新会话' });
+  if (!profileName) return;
+  const profile = profiles.find(item => item.name === profileName);
+  if (!(await uiConfirm(`将在 ${obj.hostname || obj.id.slice(0,8)} 上传并执行由“${esc(profileName)}”生成的新植入体。确认继续？`, {title:'确认生成新会话',okLabel:'生成并执行',danger:true}))) return;
+  toast('info', '正在生成、上传并执行植入体...');
+  const result = await App().ScriptSpawnLocal(obj.id, profile?.goos || obj.os || 'windows', profile?.goarch || obj.arch || 'amd64', profileName).catch(error => ({error}));
+  if (result.error) return toastRpcError(result.error, '生成新会话失败');
+  toast('ok', result.output || '新植入体已执行，正在等待回连');
+  refreshAgents();
 }
 
 // ── Interaction panel ──────────────────────────────────────────────────────
@@ -2160,7 +2178,7 @@ async function retryTask(taskId) {
   await action();
 }
 
-async function runFileTransfer(direction, sessionID, remotePath) {
+async function runFileTransfer(direction, sessionID, remotePath, options = {}) {
   const transferID = `transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const target = openTabs[sessionID]?.obj?.hostname || sessionID.slice(0, 8);
   const title = direction === 'download' ? '下载文件' : '上传文件';
@@ -2173,7 +2191,9 @@ async function runFileTransfer(direction, sessionID, remotePath) {
   taskActions.set(task.id, { cancel: () => App().CancelTransfer(transferID) });
   const call = direction === 'download'
     ? App().DownloadFileTracked(transferID, sessionID, remotePath)
-    : App().UploadFileTracked(transferID, sessionID, remotePath);
+    : options.toDirectory
+      ? App().UploadFileToDirectoryTracked(transferID, sessionID, remotePath)
+      : App().UploadFileTracked(transferID, sessionID, remotePath);
   const result = await call.catch(error => ({ error: String(error) }));
   taskActions.delete(task.id);
   if (taskStore.get(task.id)?.status === 'cancelled') return result;
@@ -2302,7 +2322,7 @@ document.querySelectorAll('.tb-btn').forEach(btn => {
 function openViewPanel(id, title, content) {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = content;
-  document.querySelector('#modal-overlay .modal')?.classList.toggle('wide', ['_infrastructure','_extensions','_team','_profiles'].includes(id));
+  document.querySelector('#modal-overlay .modal')?.classList.toggle('wide', ['_infrastructure','_extensions','_team','_profiles','_builds','_listeners','scripts','c2profiles','_c2edit','_c2view'].includes(id));
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 function hideModal() { document.getElementById('modal-overlay').classList.add('hidden'); }
@@ -3700,7 +3720,7 @@ function profilesContent() {
       <button class="btn small" onclick="pinProfiles()">📌 固定到控制台</button>
     </div>
     <div class="panel profile-editor" style="margin-bottom:12px">
-      <h3>新建配置档案</h3>
+      <div class="profile-editor-heading"><h3 id="prof-form-title">新建配置档案</h3><button type="button" class="btn small hidden" id="prof-cancel-edit">取消编辑</button></div>
       <form id="prof-form">
         <fieldset class="profile-section"><legend>基础与输出</legend>
           <div class="profile-grid">
@@ -3724,7 +3744,7 @@ function profilesContent() {
           </div>
         </fieldset>
         <fieldset class="profile-section"><legend>C2 与连接</legend>
-          <div class="gen-field"><label>多个 C2（每行：优先级 | URL | 可选协议参数）</label><textarea name="c2Entries" rows="4" placeholder="1 | mtls://10.0.0.5:8888&#10;2 | https://example.com:443" required></textarea></div>
+          <div class="gen-field"><label>多个 C2（每行：优先级 | URL | 可选协议参数）</label><textarea name="c2Entries" rows="6" placeholder="1 | mtls://10.0.0.5:8888&#10;2 | https://example.com:443&#10;3 | dns://c2.example.com&#10;4 | wg://10.0.0.5:51820&#10;5 | tcp-pivot://pivot:9898&#10;6 | namedpipe://host/pipe/sliver" required></textarea><span class="field-note">支持 mTLS、HTTP/HTTPS、DNS、WireGuard、TCP Pivot 与 Named Pipe Pivot；协议参数写在第三列。</span></div>
           <div class="profile-grid">
             <div class="gen-field"><label>连接策略</label><select name="connectionStrategy"><option value="">默认</option><option value="s">顺序</option><option value="r">随机</option><option value="rd">随机域名</option></select></div>
             <div class="gen-field"><label>重连间隔（秒）</label><input name="reconnectInterval" type="number" min="0" value="60"/></div>
@@ -3748,7 +3768,7 @@ function profilesContent() {
             <div class="gen-field"><label>区域设置</label><input name="limitLocale" placeholder="en-US"/></div>
           </div>
         </fieldset>
-        <div class="gen-row"><button type="submit" class="btn accent" style="margin-left:auto">保存配置档案</button></div>
+        <div class="gen-row"><button type="submit" class="btn accent" id="prof-submit" style="margin-left:auto">保存配置档案</button></div>
         <div id="prof-msg" class="status-msg"></div>
       </form>
     </div>
@@ -3824,6 +3844,7 @@ function wireProfileForm() {
   });
   f.format.addEventListener('change', () => { f.runAtLoad.disabled = f.format.value !== 'shared'; if (f.runAtLoad.disabled) f.runAtLoad.checked = false; });
   f.debug.addEventListener('change', () => { if (f.debug.checked) f.obfuscateSymbols.checked = false; });
+  document.getElementById('prof-cancel-edit')?.addEventListener('click', resetProfileForm);
   f.addEventListener('submit', async e => {
     e.preventDefault();
     const c2 = parseProfileC2(f.c2Entries.value);
@@ -3834,18 +3855,45 @@ function wireProfileForm() {
     msg.textContent = '正在保存...'; msg.className = 'status-msg';
     const r = await App().SaveImplantProfile(req).then(() => null).catch(e => e);
     if (r) { msg.textContent = rpcErrorMessage(r, '保存配置档案失败'); msg.className = 'status-msg err'; }
-    else { msg.textContent = '配置档案已保存'; msg.className = 'status-msg ok'; f.reset(); f.obfuscateSymbols.checked = true; document.getElementById('prof-beacon-opts').classList.add('hidden'); updateHTTPState(); refreshProfilesList(); }
+    else { msg.textContent = f.dataset.editing ? '配置档案已更新' : '配置档案已保存'; msg.className = 'status-msg ok'; resetProfileForm(); updateHTTPState(); refreshProfilesList(); }
   });
   updateHTTPState();
   refreshHTTPProfiles();
+}
+let implantProfilesCache = [];
+function resetProfileForm() {
+  const f = document.getElementById('prof-form'); if (!f) return;
+  f.reset(); delete f.dataset.editing; f.name.readOnly = false; f.obfuscateSymbols.checked = true;
+  document.getElementById('prof-form-title').textContent = '新建配置档案';
+  document.getElementById('prof-submit').textContent = '保存配置档案';
+  document.getElementById('prof-cancel-edit').classList.add('hidden');
+  document.getElementById('prof-beacon-opts').classList.add('hidden');
+  f.runAtLoad.disabled = f.format.value !== 'shared';
+}
+function editImplantProfile(name) {
+  const p = implantProfilesCache.find(profile => profile.name === name), f = document.getElementById('prof-form');
+  if (!p || !f) return toast('err', '未找到要编辑的配置档案');
+  f.dataset.editing = name; f.name.value = p.name || ''; f.name.readOnly = true;
+  ['goos','goarch','format','connectionStrategy','httpC2Profile'].forEach(key => { if (p[key] != null && f[key]) f[key].value = p[key]; });
+  ['templateName','limitDatetime','limitHostname','limitUsername','limitFileExists','limitLocale'].forEach(key => { if (f[key]) f[key].value = p[key] || ''; });
+  ['interval','jitter','reconnectInterval','maxConnectionErrors','pollTimeout'].forEach(key => { if (f[key]) f[key].value = p[key] ?? 0; });
+  ['debug','evasion','obfuscateSymbols','netGo','runAtLoad','beacon','limitDomainJoined'].forEach(key => { if (f[key]) f[key].checked = !!p[key]; });
+  f.c2Entries.value = (p.c2 || []).map((entry, index) => `${entry.priority || index + 1} | ${entry.url}${entry.options ? ` | ${entry.options}` : ''}`).join('\n') || p.c2Url || '';
+  f.trafficEncoders.value = (p.trafficEncoders || []).join(', '); f.canaryDomains.value = (p.canaryDomains || []).join(', ');
+  document.getElementById('prof-form-title').textContent = `编辑配置档案：${p.name}`;
+  document.getElementById('prof-submit').textContent = '保存修改'; document.getElementById('prof-cancel-edit').classList.remove('hidden');
+  document.getElementById('prof-beacon-opts').classList.toggle('hidden', !p.beacon);
+  f.runAtLoad.disabled = f.format.value !== 'shared'; f.c2Entries.dispatchEvent(new Event('input')); f.httpC2Profile.dispatchEvent(new Event('change'));
+  document.getElementById('modal-body')?.scrollTo({top:0,behavior:'smooth'});
 }
 async function refreshProfilesList() {
   const targets = document.querySelectorAll('[data-profiles-list]');
   if (!targets.length) return;
   const profs = await App().ListImplantProfiles().catch(() => []);
+  implantProfilesCache = profs || [];
   const html = !profs?.length
     ? '<div style="padding:10px;color:var(--muted)">暂无已保存的配置档案，请在上方创建。</div>'
-    : profs.map(p => `<div class="profile-list-row"><span><strong>${esc(p.name)}</strong><small>${p.beacon?'信标':'会话'} · ${esc(p.goos)}/${esc(p.goarch)} · ${esc(p.format)} · ${(p.c2||[]).length||1} 条 C2</small></span><span class="profile-tags">${p.evasion?'<em>规避</em>':''}${p.obfuscateSymbols?'<em>符号混淆</em>':''}${p.limitDomainJoined||p.limitHostname||p.limitUsername?'<em>执行限制</em>':''}</span><button class="btn small" onclick='genFromProfile(${JSON.stringify(p)})'>生成</button><button class="btn small danger" onclick="deleteImplantProfile('${esc(p.name)}')">删除</button></div>`).join('');
+    : profs.map(p => `<div class="profile-list-row"><span><strong>${esc(p.name)}</strong><small>${p.beacon?'信标':'会话'} · ${esc(p.goos)}/${esc(p.goarch)} · ${esc(p.format)} · ${(p.c2||[]).length||1} 条 C2</small></span><span class="profile-tags">${p.evasion?'<em>规避</em>':''}${p.obfuscateSymbols?'<em>符号混淆</em>':''}${p.limitDomainJoined||p.limitHostname||p.limitUsername?'<em>执行限制</em>':''}</span><button class="btn small" onclick="editImplantProfile(decodeURIComponent('${encodeURIComponent(p.name)}'))">编辑</button><button class="btn small" onclick='genFromProfile(${JSON.stringify(p)})'>生成</button><button class="btn small danger" onclick="deleteImplantProfile(decodeURIComponent('${encodeURIComponent(p.name)}'))">删除</button></div>`).join('');
   targets.forEach(el => el.innerHTML = html);
 }
 function deleteImplantProfile(name) {
@@ -4190,49 +4238,62 @@ async function openFileBrowser(sessionID) {
     return p.split('/').filter(Boolean);
   }
   function joinPath(parts) { return parts.length ? parts.join('/') : '.'; }
+  function childPath(dir, name) {
+    if (!dir || dir === '.') return name;
+    const separator = dir.includes('\\') && !dir.includes('/') ? '\\' : '/';
+    return dir.replace(/[\\/]+$/, '') + separator + name;
+  }
+  function formatModTime(seconds) {
+    if (!seconds) return '—';
+    const date = new Date(Number(seconds) * 1000);
+    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false });
+  }
 
   const history = [];
   let histIdx = -1;
   let currentPath = '.';
 
-  // Render the right preview panel from a file entry
-  function showPreview(f, fullPath) {
-    const pv = document.getElementById(`fb-preview-${dockId}`);
-    if (!pv) return;
-    if (!f) {
-      pv.innerHTML = `<div class="fb-preview-empty">请选择文件查看详情</div>`;
+  async function uploadToCurrentDirectory() {
+    const result = await runFileTransfer('upload', sessionID, currentPath, { toDirectory: true });
+    if (result?.error) {
+      if (!/upload cancelled/i.test(String(result.error))) toastRpcError(result.error, '上传文件失败');
       return;
     }
-    const icon = fileIcon(f.name, f.isDir);
-    const typeLabel = fileTypeLabel(f.name, f.isDir);
-    const size = f.isDir ? '—' : fmtSize(f.size);
-    pv.innerHTML = `
-      <div class="fb-preview-icon">${icon}</div>
-      <div class="fb-preview-name">${esc(f.name)}</div>
-      <div class="fb-preview-type">${typeLabel}</div>
-      <div class="fb-preview-divider"></div>
-      <div class="fb-preview-row"><span class="fb-preview-label">路径</span><span class="fb-preview-val">${esc(fullPath)}</span></div>
-      <div class="fb-preview-row"><span class="fb-preview-label">大小</span><span class="fb-preview-val">${size}</span></div>
-      <div class="fb-preview-row"><span class="fb-preview-label">模式</span><span class="fb-preview-val">${esc(f.mode || '—')}</span></div>
-      ${f.isDir ? `<div class="fb-preview-tip">双击进入文件夹</div>` : `
-      <div class="fb-preview-actions">
-        <button class="fb-preview-btn" id="fb-dl-${dockId}" data-path="${esc(fullPath)}">⬇ 下载</button>
-        <button class="fb-preview-btn danger" id="fb-del-${dockId}" data-path="${esc(fullPath)}">🗑 删除</button>
-      </div>`}
-    `;
-    // Wire download (placeholder)
-    pv.querySelector(`#fb-dl-${dockId}`)?.addEventListener('click', () => {
-      toast('info', `下载：请在会话控制台执行“download ${fullPath}”`);
-    });
-    // Wire delete
-    pv.querySelector(`#fb-del-${dockId}`)?.addEventListener('click', async () => {
-      const ok = await uiConfirm(`确定删除“${f.name}”吗？`, { title: '删除文件', okLabel: '删除', danger: true });
-      if (!ok) return;
-      const err = await App().FileBrowserDelete(sessionID, fullPath).then(() => null).catch(e => e);
-      if (err) { toastRpcError(err, '删除文件失败'); return; }
-      toast('ok', `已删除：${f.name}`);
-      renderDir(currentPath, false);
-    });
+    toast('ok', `文件已上传到 ${result.path}`);
+    await renderDir(currentPath, false);
+  }
+
+  function showFileContextMenu(event, file) {
+    event.preventDefault();
+    event.stopPropagation();
+    const item = (action, label, danger = false) => `<button class="ctx-item${danger ? ' danger' : ''}" data-fb-action="${action}">${label}</button>`;
+    ctxMenu.innerHTML = file
+      ? `<div class="ctx-agent"><strong>${esc(file.name)}</strong><span>${file.isDir ? '文件夹' : fileTypeLabel(file.name, false)}</span></div>${item('download', file.isDir ? '下载文件夹 (.tar.gz)' : '下载')}${item('upload', '上传到当前目录')}<div class="ctx-divider"></div>${item('delete', '删除', true)}`
+      : `<div class="ctx-agent"><strong>${esc(currentPath)}</strong><span>当前目录</span></div>${item('upload', '上传文件')}`;
+    ctxMenu.style.left = Math.max(8, Math.min(event.clientX, window.innerWidth - 230)) + 'px';
+    ctxMenu.style.top = Math.max(8, Math.min(event.clientY, window.innerHeight - 180)) + 'px';
+    ctxMenu.classList.remove('hidden');
+    ctxMenu.querySelectorAll('[data-fb-action]').forEach(button => button.addEventListener('click', async clickEvent => {
+      clickEvent.stopPropagation();
+      ctxMenu.classList.add('hidden');
+      const action = button.dataset.fbAction;
+      if (action === 'upload') return uploadToCurrentDirectory();
+      if (!file) return;
+      if (action === 'download') {
+        const result = await runFileTransfer('download', sessionID, file.path);
+        if (result?.error) toastRpcError(result.error, file.isDir ? '下载文件夹失败' : '下载文件失败');
+        else if (result) toast('ok', `${file.isDir ? '文件夹归档' : '文件'}已保存到 ${result.path}`);
+        return;
+      }
+      if (action === 'delete') {
+        const ok = await uiConfirm(`确定删除“${file.name}”吗？${file.isDir ? ' 文件夹及其内容将被递归删除。' : ''}`, { title: file.isDir ? '删除文件夹' : '删除文件', okLabel: '删除', danger: true });
+        if (!ok) return;
+        const error = await App().FileBrowserDelete(sessionID, file.path).then(() => null).catch(value => value);
+        if (error) return toastRpcError(error, '删除失败');
+        toast('ok', `已删除：${file.name}`);
+        await renderDir(currentPath, false);
+      }
+    }));
   }
 
   async function renderDir(path, addToHistory) {
@@ -4270,31 +4331,28 @@ async function openFileBrowser(sessionID) {
         <button class="fb-nav-btn" id="fb-up-${dockId}" title="上一级">⬆</button>
         <button class="fb-nav-btn" id="fb-refresh-${dockId}" title="刷新">🔄</button>
         <div class="fb-addressbar">${crumbs || '<span class="fb-crumb" style="color:var(--muted)">.</span>'}</div>
+        <button class="fb-nav-btn fb-upload-btn" id="fb-upload-${dockId}" title="上传文件到当前目录">⬆</button>
       </div>
-      <div class="fb-body-split">
-        <div class="fb-left-pane">
-          <div class="fb-col-header">
-            <span></span><span>名称</span><span style="text-align:right">大小</span><span>模式</span>
-          </div>
-          <div class="fb-list" id="fb-list-${dockId}">`;
+      <div class="fb-body">
+        <div class="fb-col-header">
+          <span></span><span>名称</span><span style="text-align:right">大小</span><span>修改时间</span><span>权限</span>
+        </div>
+        <div class="fb-list" id="fb-list-${dockId}">`;
 
     sorted.forEach(f => {
       const cls = f.isDir ? 'fb-item dir' : 'fb-item';
       const icon = fileIcon(f.name, f.isDir);
       const size = f.isDir ? '—' : fmtSize(f.size);
-      html += `<div class="${cls}" data-path="${esc(currentPath + '/' + f.name)}" data-name="${esc(f.name)}" data-dir="${f.isDir}" data-size="${f.size||0}" data-mode="${esc(f.mode||'')}">
+      html += `<div class="${cls}" data-path="${esc(childPath(currentPath, f.name))}" data-name="${esc(f.name)}" data-dir="${f.isDir}" data-size="${f.size||0}" data-mode="${esc(f.mode||'')}" data-mod-time="${f.modTime||0}">
         <span class="fb-icon">${icon}</span>
         <span class="fb-name">${esc(f.name)}</span>
         <span class="fb-size">${size}</span>
-        <span class="fb-date">${esc(f.mode || '')}</span>
+        <span class="fb-date">${formatModTime(f.modTime)}</span>
+        <span class="fb-mode">${esc(f.mode || '—')}</span>
       </div>`;
     });
 
     html += `</div></div>
-        <div class="fb-right-pane" id="fb-preview-${dockId}">
-          <div class="fb-preview-empty">请选择文件查看详情</div>
-        </div>
-      </div>
       <div class="fb-status">
         <span>${sorted.length} 项</span>
         <span>${dirCount} 个文件夹，${fileCount} 个文件</span>
@@ -4307,19 +4365,27 @@ async function openFileBrowser(sessionID) {
     container.querySelector(`#fb-fwd-${dockId}`)?.addEventListener('click', () => { if (histIdx < history.length - 1) { histIdx++; renderDir(history[histIdx], false); } });
     container.querySelector(`#fb-up-${dockId}`)?.addEventListener('click', () => { renderDir(currentPath + '/..'); });
     container.querySelector(`#fb-refresh-${dockId}`)?.addEventListener('click', () => { renderDir(currentPath, false); });
+    container.querySelector(`#fb-upload-${dockId}`)?.addEventListener('click', uploadToCurrentDirectory);
     container.querySelectorAll('.fb-crumb[data-nav]').forEach(c => c.addEventListener('click', () => renderDir(c.dataset.nav)));
+    container.querySelector(`#fb-list-${dockId}`)?.addEventListener('contextmenu', event => {
+      if (!event.target.closest('.fb-item')) showFileContextMenu(event, null);
+    });
 
-    // Row: single-click → preview; double-click → navigate into dir
+    // Single-click selects; double-click opens a directory; right-click shows file actions.
     let selectedItem = null;
     container.querySelectorAll('.fb-item').forEach(item => {
       item.addEventListener('click', () => {
         if (selectedItem) selectedItem.classList.remove('selected');
         item.classList.add('selected');
         selectedItem = item;
-        const f = { name: item.dataset.name, isDir: item.dataset.dir === 'true', size: parseInt(item.dataset.size)||0, mode: item.dataset.mode };
-        showPreview(f, item.dataset.path);
       });
       item.addEventListener('dblclick', () => { if (item.dataset.dir === 'true') renderDir(item.dataset.path); });
+      item.addEventListener('contextmenu', event => {
+        if (selectedItem) selectedItem.classList.remove('selected');
+        item.classList.add('selected');
+        selectedItem = item;
+        showFileContextMenu(event, { name: item.dataset.name, isDir: item.dataset.dir === 'true', path: item.dataset.path });
+      });
     });
   }
   renderDir(currentPath);
@@ -4376,6 +4442,7 @@ async function openProcessBrowser(sessionID) {
         <input class="proc-search" id="proc-filter-${dockId}" type="text" placeholder="🔍 筛选进程..." />
         <button class="proc-tb-btn" id="proc-refresh-${dockId}">🔄 刷新</button>
         <button class="proc-tb-btn danger" id="proc-kill-btn-${dockId}">☠️ 终止</button>
+        <button class="proc-tb-btn" id="proc-dump-btn-${dockId}">💾 转储</button>
         <button class="proc-tb-btn" id="proc-migrate-btn-${dockId}">🎯 迁移</button>
       </div>
       <div class="proc-col-header">
@@ -4447,6 +4514,12 @@ async function openProcessBrowser(sessionID) {
     container.querySelector(`#proc-migrate-btn-${dockId}`)?.addEventListener('click', () => {
       if (!selectedPID) { toast('info', '请先选择一个进程'); return; }
       openMigrateDialog(sessionID, selectedPID);
+    });
+    container.querySelector(`#proc-dump-btn-${dockId}`)?.addEventListener('click', async () => {
+      if (!selectedPID) { toast('info', '请先选择一个进程'); return; }
+      const result = await App().ProcessDump(sessionID, selectedPID).catch(error => ({error}));
+      if (result.error) return toastRpcError(result.error, '进程转储失败');
+      toast('ok', `PID ${selectedPID} 的内存转储已保存到 ${result.path}`);
     });
   }
   loadProcs();

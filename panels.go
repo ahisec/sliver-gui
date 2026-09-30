@@ -20,10 +20,11 @@ import (
 // ─── File Browser ─────────────────────────────────────────────────────────────
 
 type FileEntry struct {
-	Name  string `json:"name"`
-	IsDir bool   `json:"isDir"`
-	Size  int64  `json:"size"`
-	Mode  string `json:"mode"`
+	Name    string `json:"name"`
+	IsDir   bool   `json:"isDir"`
+	Size    int64  `json:"size"`
+	Mode    string `json:"mode"`
+	ModTime int64  `json:"modTime"`
 }
 
 type FileBrowserResult struct {
@@ -54,10 +55,11 @@ func (a *App) FileBrowserList(sessionID, path string) FileBrowserResult {
 	files := make([]FileEntry, 0, len(resp.Files))
 	for _, f := range resp.Files {
 		files = append(files, FileEntry{
-			Name:  f.Name,
-			IsDir: f.IsDir,
-			Size:  f.Size,
-			Mode:  f.Mode,
+			Name:    f.Name,
+			IsDir:   f.IsDir,
+			Size:    f.Size,
+			Mode:    f.Mode,
+			ModTime: f.ModTime,
 		})
 	}
 	return FileBrowserResult{Path: resp.Path, Files: files}
@@ -331,10 +333,10 @@ type KillChainState struct {
 }
 
 var (
-	stateMu        sync.Mutex
-	killChain      = KillChainState{}
-	iocList        []IOCEntry
-	iocCounter     int
+	stateMu         sync.Mutex
+	killChain       = KillChainState{}
+	iocList         []IOCEntry
+	iocCounter      int
 	engagementStart *time.Time
 )
 
