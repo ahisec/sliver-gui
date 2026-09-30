@@ -1820,12 +1820,17 @@ func (a *App) DownloadLoot(lootID string) TransferResult {
 // ─── Build History ────────────────────────────────────────────────────────────
 
 type BuildView struct {
-	Name   string   `json:"name"`
-	GOOS   string   `json:"goos"`
-	GOARCH string   `json:"goarch"`
-	Format string   `json:"format"`
-	Debug  bool     `json:"debug"`
-	C2URLs []string `json:"c2Urls"`
+	Name               string   `json:"name"`
+	GOOS               string   `json:"goos"`
+	GOARCH             string   `json:"goarch"`
+	Format             string   `json:"format"`
+	Debug              bool     `json:"debug"`
+	Beacon             bool     `json:"beacon"`
+	C2URLs             []string `json:"c2Urls"`
+	HTTPC2Profile      string   `json:"httpC2Profile"`
+	ConnectionStrategy string   `json:"connectionStrategy"`
+	TrafficEncoders    []string `json:"trafficEncoders"`
+	TemplateName       string   `json:"templateName"`
 }
 
 func (a *App) GetBuildHistory() ([]BuildView, error) {
@@ -1844,12 +1849,12 @@ func (a *App) GetBuildHistory() ([]BuildView, error) {
 			urls = append(urls, c.URL)
 		}
 		out = append(out, BuildView{
-			Name:   name,
-			GOOS:   cfg.GOOS,
-			GOARCH: cfg.GOARCH,
-			Format: cfg.Format.String(),
-			Debug:  cfg.Debug,
-			C2URLs: urls,
+			Name: name, GOOS: cfg.GOOS, GOARCH: cfg.GOARCH,
+			Format: cfg.Format.String(), Debug: cfg.Debug, Beacon: cfg.IsBeacon,
+			C2URLs: urls, HTTPC2Profile: cfg.HTTPC2ConfigName,
+			ConnectionStrategy: cfg.ConnectionStrategy,
+			TrafficEncoders:    append([]string(nil), cfg.TrafficEncoders...),
+			TemplateName:       cfg.TemplateName,
 		})
 	}
 	return out, nil
@@ -1954,10 +1959,15 @@ func (a *App) ListOperators() ([]OperatorView, error) {
 // ─── Listeners / Jobs ─────────────────────────────────────────────────────────
 
 type JobView struct {
-	ID       uint32 `json:"id"`
-	Name     string `json:"name"`
-	Protocol string `json:"protocol"`
-	Port     uint32 `json:"port"`
+	ID          uint32   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Protocol    string   `json:"protocol"`
+	Port        uint32   `json:"port"`
+	Domains     []string `json:"domains"`
+	ProfileName string   `json:"profileName"`
+	Address     string   `json:"address"`
+	Status      string   `json:"status"`
 }
 
 func (a *App) ListJobs() ([]JobView, error) {
@@ -1971,7 +1981,15 @@ func (a *App) ListJobs() ([]JobView, error) {
 	}
 	out := make([]JobView, 0, len(resp.Active))
 	for _, j := range resp.Active {
-		out = append(out, JobView{ID: j.ID, Name: j.Name, Protocol: j.Protocol, Port: j.Port})
+		address := fmt.Sprintf(":%d", j.Port)
+		if len(j.Domains) > 0 {
+			address = strings.Join(j.Domains, ", ")
+		}
+		out = append(out, JobView{
+			ID: j.ID, Name: j.Name, Description: j.Description,
+			Protocol: j.Protocol, Port: j.Port, Domains: append([]string(nil), j.Domains...),
+			ProfileName: j.ProfileName, Address: address, Status: "running",
+		})
 	}
 	return out, nil
 }
@@ -1992,6 +2010,9 @@ type StartMTLSReq struct {
 }
 
 func (a *App) StartMTLSListener(req StartMTLSReq) error {
+	if err := validateListenerHostPort(req.Host, req.Port); err != nil {
+		return err
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err
@@ -2001,49 +2022,84 @@ func (a *App) StartMTLSListener(req StartMTLSReq) error {
 }
 
 type StartHTTPReq struct {
-	Host   string `json:"host"`
-	Port   uint32 `json:"port"`
-	Secure bool   `json:"secure"`
+	Domain          string `json:"domain"`
+	Host            string `json:"host"`
+	Port            uint32 `json:"port"`
+	Secure          bool   `json:"secure"`
+	Website         string `json:"website"`
+	Cert            []byte `json:"cert"`
+	Key             []byte `json:"key"`
+	ACME            bool   `json:"acme"`
+	EnforceOTP      bool   `json:"enforceOtp"`
+	LongPollTimeout int64  `json:"longPollTimeout"`
+	LongPollJitter  int64  `json:"longPollJitter"`
+	RandomizeJARM   bool   `json:"randomizeJarm"`
 }
 
 func (a *App) StartHTTPListener(req StartHTTPReq) error {
+	if err := validateHTTPListener(req); err != nil {
+		return err
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err
 	}
+	pb := &clientpb.HTTPListenerReq{
+		Domain: req.Domain, Host: req.Host, Port: req.Port, Secure: req.Secure,
+		Website: req.Website, Cert: req.Cert, Key: req.Key, ACME: req.ACME,
+		EnforceOTP: req.EnforceOTP, LongPollTimeout: req.LongPollTimeout,
+		LongPollJitter: req.LongPollJitter, RandomizeJARM: req.RandomizeJARM,
+	}
 	if req.Secure {
-		_, err = client.RPC.StartHTTPSListener(a.ctx, &clientpb.HTTPListenerReq{Host: req.Host, Port: req.Port})
+		_, err = client.RPC.StartHTTPSListener(a.ctx, pb)
 	} else {
-		_, err = client.RPC.StartHTTPListener(a.ctx, &clientpb.HTTPListenerReq{Host: req.Host, Port: req.Port})
+		_, err = client.RPC.StartHTTPListener(a.ctx, pb)
 	}
 	return err
 }
 
 type StartDNSReq struct {
-	Domains []string `json:"domains"`
+	Domains    []string `json:"domains"`
+	Canaries   bool     `json:"canaries"`
+	Host       string   `json:"host"`
+	Port       uint32   `json:"port"`
+	EnforceOTP bool     `json:"enforceOtp"`
 }
 
 func (a *App) StartDNSListener(req StartDNSReq) error {
+	if err := validateDNSListener(req); err != nil {
+		return err
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err
 	}
-	_, err = client.RPC.StartDNSListener(a.ctx, &clientpb.DNSListenerReq{Domains: req.Domains})
+	_, err = client.RPC.StartDNSListener(a.ctx, &clientpb.DNSListenerReq{
+		Domains: req.Domains, Canaries: req.Canaries, Host: req.Host,
+		Port: req.Port, EnforceOTP: req.EnforceOTP,
+	})
 	return err
 }
 
 type StartWGReq struct {
+	Host    string `json:"host"`
 	Port    uint32 `json:"port"`
+	TunIP   string `json:"tunIp"`
 	NPort   uint32 `json:"nPort"`
 	KeyPort uint32 `json:"keyPort"`
 }
 
 func (a *App) StartWGListener(req StartWGReq) error {
+	if err := validateWGListener(req); err != nil {
+		return err
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return err
 	}
-	_, err = client.RPC.StartWGListener(a.ctx, &clientpb.WGListenerReq{Port: req.Port, NPort: req.NPort, KeyPort: req.KeyPort})
+	_, err = client.RPC.StartWGListener(a.ctx, &clientpb.WGListenerReq{
+		Host: req.Host, Port: req.Port, TunIP: req.TunIP, NPort: req.NPort, KeyPort: req.KeyPort,
+	})
 	return err
 }
 
@@ -2112,15 +2168,23 @@ func (a *App) ListenerC2Options() ([]string, error) {
 // ─── Implant Generation ───────────────────────────────────────────────────────
 
 type GenerateRequest struct {
-	Name     string `json:"name"`
-	GOOS     string `json:"goos"`
-	GOARCH   string `json:"goarch"`
-	Format   string `json:"format"`
-	C2URL    string `json:"c2Url"`
-	Debug    bool   `json:"debug"`
-	Beacon   bool   `json:"beacon"`   // generate in beacon mode instead of session mode
-	Interval int64  `json:"interval"` // beacon check-in interval, seconds
-	Jitter   int64  `json:"jitter"`   // beacon jitter, seconds
+	Name                string   `json:"name"`
+	GOOS                string   `json:"goos"`
+	GOARCH              string   `json:"goarch"`
+	Format              string   `json:"format"`
+	C2URL               string   `json:"c2Url"`
+	Debug               bool     `json:"debug"`
+	Beacon              bool     `json:"beacon"`
+	Interval            int64    `json:"interval"`
+	Jitter              int64    `json:"jitter"`
+	ConnectionStrategy  string   `json:"connectionStrategy"`
+	ReconnectInterval   int64    `json:"reconnectInterval"`
+	MaxConnectionErrors uint32   `json:"maxConnectionErrors"`
+	PollTimeout         int64    `json:"pollTimeout"`
+	HTTPC2Profile       string   `json:"httpC2Profile"`
+	TrafficEncoders     []string `json:"trafficEncoders"`
+	TemplateName        string   `json:"templateName"`
+	MetadataPath        string   `json:"metadataPath"`
 }
 
 type GenerateResult struct {
@@ -2158,8 +2222,8 @@ func (a *App) GenerateImplant(req GenerateRequest) GenerateResult {
 	if err != nil {
 		return GenerateResult{Error: err.Error()}
 	}
-	if strings.TrimSpace(req.C2URL) == "" {
-		return GenerateResult{Error: "a C2 URL is required (select a listener or enter one)"}
+	if errors := validateGenerateRequest(req); len(errors) > 0 {
+		return GenerateResult{Error: strings.Join(errors, "; ")}
 	}
 	cfg := a.buildImplantConfig(req)
 	// Build names must be unique in the teamserver DB (UNIQUE constraint on
@@ -2197,6 +2261,19 @@ func (a *App) GenerateImplant(req GenerateRequest) GenerateResult {
 	}
 	if resp.File == nil {
 		return GenerateResult{Error: "server returned an empty build"}
+	}
+	if req.MetadataPath != "" {
+		metadata, metadataErr := loadPEMetadata(req.MetadataPath, req.GOARCH)
+		if metadataErr != nil {
+			return GenerateResult{Error: metadataErr.Error()}
+		}
+		_, metadataErr = client.RPC.GenerateSpoofMetadata(a.ctx, &clientpb.GenerateSpoofMetadataReq{
+			ImplantBuildID: resp.ImplantBuildID, ImplantName: resp.ImplantName,
+			SpoofMetadata: metadata,
+		})
+		if metadataErr != nil {
+			return GenerateResult{Error: "build succeeded, but executable metadata cloning failed: " + metadataErr.Error()}
+		}
 	}
 	// The build is now stored on the teamserver. We deliberately do NOT open a
 	// save dialog here: doing so blocked this call (and kept the "Building…"
@@ -2888,15 +2965,22 @@ func (a *App) RemoveService(sessionID, hostname, serviceName string) error {
 // ─── Implant Profiles ───────────────────────────────────────────────────────────
 
 type ProfileView struct {
-	Name     string `json:"name"`
-	GOOS     string `json:"goos"`
-	GOARCH   string `json:"goarch"`
-	Format   string `json:"format"`
-	C2URL    string `json:"c2Url"`
-	Debug    bool   `json:"debug"`
-	Beacon   bool   `json:"beacon"`
-	Interval int64  `json:"interval"`
-	Jitter   int64  `json:"jitter"`
+	Name                string   `json:"name"`
+	GOOS                string   `json:"goos"`
+	GOARCH              string   `json:"goarch"`
+	Format              string   `json:"format"`
+	C2URL               string   `json:"c2Url"`
+	Debug               bool     `json:"debug"`
+	Beacon              bool     `json:"beacon"`
+	Interval            int64    `json:"interval"`
+	Jitter              int64    `json:"jitter"`
+	ConnectionStrategy  string   `json:"connectionStrategy"`
+	ReconnectInterval   int64    `json:"reconnectInterval"`
+	MaxConnectionErrors uint32   `json:"maxConnectionErrors"`
+	PollTimeout         int64    `json:"pollTimeout"`
+	HTTPC2Profile       string   `json:"httpC2Profile"`
+	TrafficEncoders     []string `json:"trafficEncoders"`
+	TemplateName        string   `json:"templateName"`
 }
 
 func (a *App) ListImplantProfiles() ([]ProfileView, error) {
@@ -2919,6 +3003,13 @@ func (a *App) ListImplantProfiles() ([]ProfileView, error) {
 			v.Beacon = p.Config.IsBeacon
 			v.Interval = p.Config.BeaconInterval / int64(time.Second)
 			v.Jitter = p.Config.BeaconJitter / int64(time.Second)
+			v.ConnectionStrategy = p.Config.ConnectionStrategy
+			v.ReconnectInterval = p.Config.ReconnectInterval / int64(time.Second)
+			v.MaxConnectionErrors = p.Config.MaxConnectionErrors
+			v.PollTimeout = p.Config.PollTimeout / int64(time.Second)
+			v.HTTPC2Profile = p.Config.HTTPC2ConfigName
+			v.TrafficEncoders = append([]string(nil), p.Config.TrafficEncoders...)
+			v.TemplateName = p.Config.TemplateName
 			if len(p.Config.C2) > 0 {
 				v.C2URL = p.Config.C2[0].URL
 			}
@@ -2938,8 +3029,8 @@ func (a *App) SaveImplantProfile(req GenerateRequest) error {
 	if strings.TrimSpace(req.Name) == "" {
 		return fmt.Errorf("profile name is required")
 	}
-	if strings.TrimSpace(req.C2URL) == "" {
-		return fmt.Errorf("a C2 URL is required")
+	if errors := validateGenerateRequest(req); len(errors) > 0 {
+		return fmt.Errorf("%s", strings.Join(errors, "; "))
 	}
 	cfg := a.buildImplantConfig(req)
 	_, err = client.RPC.SaveImplantProfile(a.ctx, &clientpb.ImplantProfile{
@@ -2955,12 +3046,19 @@ func (a *App) SaveImplantProfile(req GenerateRequest) error {
 // GenerateImplant and SaveImplantProfile so profiles and builds stay consistent.
 func (a *App) buildImplantConfig(req GenerateRequest) *clientpb.ImplantConfig {
 	cfg := &clientpb.ImplantConfig{
-		GOOS:             req.GOOS,
-		GOARCH:           req.GOARCH,
-		Debug:            req.Debug,
-		Format:           formatFromString(req.Format),
-		C2:               []*clientpb.ImplantC2{{URL: req.C2URL, Priority: 1}},
-		ObfuscateSymbols: false,
+		GOOS:                   req.GOOS,
+		GOARCH:                 req.GOARCH,
+		Debug:                  req.Debug,
+		Format:                 formatFromString(req.Format),
+		C2:                     []*clientpb.ImplantC2{{URL: req.C2URL, Priority: 1}},
+		ObfuscateSymbols:       false,
+		ConnectionStrategy:     req.ConnectionStrategy,
+		ReconnectInterval:      req.ReconnectInterval * int64(time.Second),
+		MaxConnectionErrors:    req.MaxConnectionErrors,
+		PollTimeout:            req.PollTimeout * int64(time.Second),
+		TrafficEncodersEnabled: len(req.TrafficEncoders) > 0,
+		TrafficEncoders:        append([]string(nil), req.TrafficEncoders...),
+		TemplateName:           req.TemplateName,
 		// MTLS is always compiled in as a baseline transport. The generated
 		// implant's transports/session.go imports net/url, sync and sliverpb which
 		// only the MTLS/HTTP transports use; an implant that ends up with none of
@@ -2979,7 +3077,9 @@ func (a *App) buildImplantConfig(req GenerateRequest) *clientpb.ImplantConfig {
 		cfg.BeaconInterval = interval * int64(time.Second)
 		cfg.BeaconJitter = req.Jitter * int64(time.Second)
 	}
-	if hc2, _ := a.firstHTTPC2ProfileName(); hc2 != "" {
+	if req.HTTPC2Profile != "" {
+		cfg.HTTPC2ConfigName = req.HTTPC2Profile
+	} else if hc2, _ := a.firstHTTPC2ProfileName(); hc2 != "" {
 		cfg.HTTPC2ConfigName = hc2
 	} else {
 		cfg.HTTPC2ConfigName = "default"
