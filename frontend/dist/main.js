@@ -1972,6 +1972,7 @@ async function openCompatibilityPanel() {
   }
 
   const gui = snapshot.gui || {};
+  const dependencies = gui.dependencies || {};
   const generatedAt = snapshot.generatedAt ? new Date(snapshot.generatedAt).toLocaleString() : '-';
   const items = (snapshot.items || []).map(item => {
     const status = compatibilityStatus(item.status);
@@ -1990,6 +1991,9 @@ async function openCompatibilityPanel() {
       <div><span>团队服务器</span><strong>${esc(snapshot.teamserver || '-')}</strong></div>
       <div><span>操作员</span><strong>${esc(snapshot.operator || '-')}</strong></div>
       <div><span>GUI 版本</span><strong>${esc(gui.version || 'dev')} · ${esc(gui.gitCommit || 'unknown')}</strong></div>
+      <div><span>Wails</span><strong>${esc(dependencies.wails || 'unknown')}</strong></div>
+      <div><span>Sliver 客户端依赖</span><strong>${esc(dependencies.sliver || 'unknown')}</strong></div>
+      <div><span>Protobuf</span><strong>${esc(dependencies.protobuf || 'unknown')}</strong></div>
       <div><span>检测时间</span><strong>${esc(generatedAt)}</strong></div>
     </div>
     <div class="compat-note">此页面仅调用只读 RPC，不会修改远程团队服务器配置。</div>

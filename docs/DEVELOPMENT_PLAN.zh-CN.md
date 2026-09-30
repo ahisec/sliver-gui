@@ -173,7 +173,7 @@ C2 配置
 任务：
 
 - [x] 新增 `ServerCapabilities` 后端接口和兼容性页面。
-- [ ] 显示 Teamserver、GUI、Wails 和 protobuf/Sliver 依赖版本。
+- [x] 显示 Teamserver、GUI、Wails 和 protobuf/Sliver 依赖版本。
 - [x] 将 Beacon Task、Implant Generate、Armory 安装等统一为任务模型。
 - [x] 支持任务状态：排队、运行、等待回连、成功、失败、取消。
 - [x] 展示开始时间、持续时间、目标、结果摘要和安全过滤后的错误。
