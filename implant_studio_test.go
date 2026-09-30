@@ -115,6 +115,9 @@ func TestBuildImplantConfigLegacyC2AndDebug(t *testing.T) {
 	if cfg.ObfuscateSymbols || cfg.RunAtLoad {
 		t.Fatalf("debug/non-shared compatibility rules were not applied: %+v", cfg)
 	}
+	if cfg.HTTPC2ConfigName != "" {
+		t.Fatalf("non-HTTP implant must not carry an HTTP C2 profile: %+v", cfg)
+	}
 }
 
 func TestBuildImplantConfigPivotTransportsKeepMTLSBaseline(t *testing.T) {

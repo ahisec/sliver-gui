@@ -3190,17 +3190,12 @@ func (a *App) buildImplantConfig(req GenerateRequest) *clientpb.ImplantConfig {
 		cfg.BeaconInterval = interval * int64(time.Second)
 		cfg.BeaconJitter = req.Jitter * int64(time.Second)
 	}
-	if req.HTTPC2Profile != "" {
-		cfg.HTTPC2ConfigName = req.HTTPC2Profile
-	} else if hc2, _ := a.firstHTTPC2ProfileName(); hc2 != "" {
-		cfg.HTTPC2ConfigName = hc2
-	} else {
-		cfg.HTTPC2ConfigName = "default"
-	}
+	hasHTTP := false
 	for _, c2 := range c2Entries {
 		switch strings.ToLower(schemeOf(c2.URL)) {
 		case "http", "https":
 			cfg.IncludeHTTP = true
+			hasHTTP = true
 		case "dns":
 			cfg.IncludeDNS = true
 		case "wg", "wireguard":
@@ -3213,6 +3208,15 @@ func (a *App) buildImplantConfig(req GenerateRequest) *clientpb.ImplantConfig {
 			cfg.IncludeMTLS = true
 		default:
 			cfg.IncludeMTLS = true
+		}
+	}
+	if hasHTTP {
+		if req.HTTPC2Profile != "" {
+			cfg.HTTPC2ConfigName = req.HTTPC2Profile
+		} else if hc2, _ := a.firstHTTPC2ProfileName(); hc2 != "" {
+			cfg.HTTPC2ConfigName = hc2
+		} else {
+			cfg.HTTPC2ConfigName = "default"
 		}
 	}
 	if req.GOOS != "windows" && cfg.Format == clientpb.OutputFormat_SERVICE {

@@ -137,6 +137,20 @@ function uiDialog({ title, message, input, placeholder, okLabel = '确定', dang
 }
 function uiConfirm(message, opts = {}) { return uiDialog({ message, ...opts }); }
 function uiPrompt(message, defaultValue = '', opts = {}) { return uiDialog({ message, input: true, placeholder: defaultValue, okLabel: '确定', ...opts }); }
+function uiSelectDialog(message, options, opts = {}) {
+  return new Promise(resolve => {
+    const ov = document.createElement('div'); ov.className = 'ui-dialog-overlay';
+    ov.innerHTML = `<div class="ui-dialog"><div class="ui-dialog-title">${esc(opts.title || '')}</div><div class="ui-dialog-message">${esc(message)}</div><select class="ui-dialog-select">${options.map(option => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join('')}</select><div class="ui-dialog-actions"><button class="btn small" data-dialog-cancel>取消</button><button class="btn small accent" data-dialog-ok>${esc(opts.okLabel || '确定')}</button></div></div>`;
+    document.body.appendChild(ov);
+    const select = ov.querySelector('select'); select.focus();
+    const done = value => { ov.remove(); document.removeEventListener('keydown', onKey); resolve(value); };
+    const onKey = event => { if (event.key === 'Escape') done(null); else if (event.key === 'Enter') done(select.value); };
+    ov.querySelector('[data-dialog-cancel]').addEventListener('click', () => done(null));
+    ov.querySelector('[data-dialog-ok]').addEventListener('click', () => done(select.value));
+    ov.addEventListener('click', event => { if (event.target === ov) done(null); });
+    document.addEventListener('keydown', onKey);
+  });
+}
 
 async function runDangerousAction({ title, message, okLabel, action, success, refresh }) {
   const confirmed = await uiConfirm(message, { title, okLabel, danger: true });
@@ -816,17 +830,42 @@ function resetGraph() {
 const ctxMenu = document.getElementById('ctx-menu');
 function showCtx(e, kind, obj) {
   e.preventDefault(); activeCtxAgent = { kind, obj };
-  ctxMenu.style.left = Math.min(e.clientX, window.innerWidth-160)+'px';
-  ctxMenu.style.top = Math.min(e.clientY, window.innerHeight-100)+'px';
+  const session = kind === 'session', windows = (obj.os || '').toLowerCase().includes('windows');
+  const item = (action, label, options = {}) => `<button class="ctx-item${options.danger ? ' danger' : ''}" data-ctx-action="${action}" ${options.disabled ? 'disabled' : ''}>${label}</button>`;
+  ctxMenu.innerHTML = `<div class="ctx-agent"><strong>${esc(obj.hostname || obj.name || obj.id.slice(0,8))}</strong><span>${session ? '实时会话' : '异步信标'}</span></div>
+    ${item('overview','主机概览')}${item('interact', session ? '打开工作区' : '打开信标工作区')}
+    <div class="ctx-divider"></div>
+    ${session ? `${windows ? item('screenshot','截取屏幕') : ''}${item('network','网络信息')}${item('files','文件浏览器')}${item('upload','上传文件')}${item('processes','进程浏览器')}${windows ? item('migrate','进程迁移') + item('integrity','检查完整性级别') : ''}` : '<div class="ctx-hint">实时浏览和主机操作需使用 Session</div>'}
+    <div class="ctx-divider"></div>
+    ${session ? item('infrastructure','网络基础设施') + item('automation','自动化脚本') : ''}${item('copy-summary','复制目标摘要')}${item('copy-id','复制 ID')}${item('copy-host','复制主机名')}${item('copy-user','复制用户名')}${item('copy-address','复制地址')}
+    ${session ? item('rename','重命名') : ''}<div class="ctx-divider"></div>${item('kill','终止', {danger:true})}`;
+  ctxMenu.style.left = Math.max(8, Math.min(e.clientX, window.innerWidth-230))+'px';
+  ctxMenu.style.top = Math.max(8, Math.min(e.clientY, window.innerHeight-Math.min(560, ctxMenu.scrollHeight || 560)))+'px';
   ctxMenu.classList.remove('hidden');
 }
 document.addEventListener('click', () => ctxMenu.classList.add('hidden'));
-document.getElementById('ctx-interact').addEventListener('click', () => { if (activeCtxAgent) openInteract(activeCtxAgent.kind, activeCtxAgent.obj); });
-document.getElementById('ctx-integrity').addEventListener('click', async () => {
-  if (!activeCtxAgent) return;
-  const { kind, obj } = activeCtxAgent;
-  if (kind !== 'session') return toast('info', '完整性检查需要交互式会话（信标请在控制台运行 getprivs）');
-  if (!(obj.os || '').toLowerCase().includes('windows')) return toast('info', '完整性级别仅适用于 Windows');
+ctxMenu.addEventListener('click', async event => {
+  const button = event.target.closest('[data-ctx-action]');
+  if (!button || button.disabled || !activeCtxAgent) return;
+  event.stopPropagation(); ctxMenu.classList.add('hidden');
+  const { kind, obj } = activeCtxAgent, action = button.dataset.ctxAction;
+  if (action === 'overview') return openAgentOverview(kind, obj);
+  if (action === 'interact') return openInteract(kind, obj);
+  if (action === 'screenshot') return openAgentScreenshot(obj);
+  if (action === 'network') return openAgentNetwork(obj);
+  if (action === 'files') return openFileBrowser(obj.id);
+  if (action === 'upload') return uploadFromContext(obj);
+  if (action === 'processes') return openProcessBrowser(obj.id);
+  if (action === 'migrate') return openMigrateDialog(obj.id);
+  if (action === 'infrastructure') { await openInfrastructurePanel(); const select = document.getElementById('infra-session-filter'); if (select) { select.value = obj.id; select.dispatchEvent(new Event('change')); } return; }
+  if (action === 'automation') { await openScriptsPanel(); const select = document.getElementById('scr-session'); if (select) select.value = obj.id; return; }
+  if (action.startsWith('copy-')) return copyAgentValue(action, kind, obj);
+  if (action === 'integrity') return checkAgentIntegrity(obj);
+  if (action === 'rename') return renameContextSession(obj);
+  if (action === 'kill') return killContextAgent(kind, obj);
+});
+
+async function checkAgentIntegrity(obj) {
   toast('info', `正在检查 ${obj.hostname} 的完整性级别...`);
   const r = await App().GetPrivs(obj.id).catch(() => null);
   if (!r || !r.integrity) return toast('err', 'getprivs 失败（需要在线的 Windows 会话）');
@@ -836,25 +875,70 @@ document.getElementById('ctx-integrity').addEventListener('click', async () => {
   toast(isPrivileged(obj) ? 'ok' : 'info', `${obj.hostname}：完整性级别 ${label}`);
   renderTable();
   if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
-});
-document.getElementById('ctx-rename').addEventListener('click', async () => {
-  if (!activeCtxAgent || activeCtxAgent.kind !== 'session') return;
-  const n = await uiPrompt('新名称：', activeCtxAgent.obj.name || '', { title: '重命名会话' }); if (!n) return;
-  await App().RenameSession(activeCtxAgent.obj.id, n)
+}
+async function renameContextSession(obj) {
+  const n = await uiPrompt('新名称：', obj.name || '', { title: '重命名会话' }); if (!n) return;
+  await App().RenameSession(obj.id, n)
     .then(() => toast('ok', '会话已重命名'))
-    .catch(e => toast('err', '重命名失败：' + e));
+    .catch(e => toastRpcError(e, '重命名失败'));
   refreshAgents();
-});
-document.getElementById('ctx-kill').addEventListener('click', async () => {
-  if (!activeCtxAgent) return;
-  const { kind, obj } = activeCtxAgent;
+}
+async function killContextAgent(kind, obj) {
   if (!(await uiConfirm(`确定终止 ${obj.hostname || obj.id} 上的${kind === 'session' ? '会话' : '信标'}吗？`, { title: '终止代理', okLabel: '终止', danger: true }))) return;
   const call = kind === 'session' ? App().KillSession(obj.id) : App().KillBeacon(obj.id);
   await call
     .then(() => toast('ok', `已终止${kind === 'session' ? '会话' : '信标'} ${obj.hostname || ''}`.trim()))
     .catch(e => toast('err', '终止失败：' + e));
   refreshAgents();
-});
+}
+
+function openAgentOverview(kind, obj) {
+  const rows = [['类型',kind === 'session' ? '实时会话' : '异步信标'],['名称',obj.name || '-'],['主机名',obj.hostname || '-'],['用户名',obj.username || '-'],['系统',`${obj.os || '-'} / ${obj.arch || '-'}`],['PID',obj.pid || '-'],['传输',obj.transport || '-'],['远程地址',obj.remoteAddress || '-'],['最近签到',obj.lastCheckin || '-']];
+  if (kind === 'beacon') rows.push(['下次预计签到',obj.nextCheckin || '-']);
+  openViewPanel('_agent-overview', `主机概览 - ${obj.hostname || obj.id.slice(0,8)}`, `<div class="agent-overview">${rows.map(([label,value]) => `<div><span>${label}</span><strong>${esc(value)}</strong></div>`).join('')}</div>`);
+}
+
+async function openAgentScreenshot(obj) {
+  openViewPanel('_agent-screenshot', `屏幕截图 - ${obj.hostname || obj.id.slice(0,8)}`, '<div class="infra-loading"><span class="spinner"></span>正在截取屏幕...</div>');
+  const result = await App().TakeScreenshot(obj.id).then(data => ({ data })).catch(error => ({ error }));
+  const body = document.getElementById('modal-body');
+  if (result.error) body.innerHTML = rpcErrorHtml(result.error, '截取屏幕失败');
+  else body.innerHTML = `<div class="screenshot-preview"><img src="${result.data}" alt="${esc(obj.hostname || '目标')} 的屏幕截图"/></div>`;
+}
+
+async function openAgentNetwork(obj) {
+  openViewPanel('_agent-network', `网络信息 - ${obj.hostname || obj.id.slice(0,8)}`, '<div class="infra-loading"><span class="spinner"></span>正在读取网络信息...</div>');
+  const [interfaces, connections] = await Promise.all([App().Ifconfig(obj.id).catch(error => ({ error })), App().GetNetstat(obj.id).catch(error => ({ error }))]);
+  const body = document.getElementById('modal-body');
+  if (interfaces.error || connections.error) { body.innerHTML = rpcErrorHtml(interfaces.error || connections.error, '读取网络信息失败'); return; }
+  body.innerHTML = `<div class="network-summary"><section><h3>网络接口</h3>${interfaces.map(item => `<div class="network-interface"><strong>${esc(item.name)}</strong><span>${esc(item.mac || '无 MAC')}</span><code>${esc((item.ips || []).join('\n') || '无地址')}</code></div>`).join('') || '<div class="empty-state">没有网络接口</div>'}</section><section><h3>活动连接</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>协议</th><th>本地地址</th><th>远程地址</th><th>状态</th><th>进程</th></tr></thead><tbody>${connections.map(item => `<tr><td>${esc(item.protocol)}</td><td><code>${esc(item.localAddr)}</code></td><td><code>${esc(item.remoteAddr)}</code></td><td>${esc(item.state)}</td><td>${esc(item.process || item.pid || '-')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty-state">没有活动连接</td></tr>'}</tbody></table></div></section></div>`;
+}
+
+async function uploadFromContext(obj) {
+  const remotePath = await uiPrompt('远程目标路径（留空使用本地文件名）：', '', { title:'上传文件' });
+  if (remotePath === null) return;
+  const result = await runFileTransfer('upload', obj.id, remotePath);
+  if (result?.error) toastRpcError(result.error, '上传文件失败'); else if (result) toast('ok', `文件已上传到 ${result.path}`);
+}
+
+async function copyAgentValue(action, kind, obj) {
+  const values = {'copy-id':obj.id,'copy-host':obj.hostname,'copy-user':obj.username,'copy-address':obj.remoteAddress,'copy-summary':`${kind === 'session' ? 'Session' : 'Beacon'} | ${obj.hostname || '-'} | ${obj.username || '-'} | ${obj.remoteAddress || '-'} | ${obj.os || '-'}/${obj.arch || '-'} | ${obj.id}`};
+  const value = values[action] || '';
+  try { await navigator.clipboard.writeText(value); toast('ok', '已复制到剪贴板'); }
+  catch (error) { toast('err', '复制失败'); }
+}
+
+async function openMigrateDialog(sessionID, initialPID = '') {
+  const profiles = await App().ListImplantProfiles().catch(error => ({ error }));
+  if (profiles.error) return toastRpcError(profiles.error, '读取植入体配置档案失败');
+  if (!profiles.length) return toast('info', '请先创建植入体配置档案');
+  const pid = await uiPrompt('目标进程 PID：', String(initialPID || ''), { title:'进程迁移' });
+  if (!pid || !/^\d+$/.test(pid)) return pid !== null && toast('err', '请输入有效 PID');
+  const profile = await uiSelectDialog('选择用于迁移的植入体配置档案：', profiles.map(item => ({value:item.name,label:`${item.name} · ${item.goos}/${item.goarch}`})), { title:'进程迁移' });
+  if (!profile) return;
+  if (!(await uiConfirm(`确认将当前会话迁移到 PID ${pid}？此操作会使用配置档案“${esc(profile)}”构建载荷。`, {title:'确认进程迁移',okLabel:'迁移',danger:true}))) return;
+  await App().Migrate(sessionID, Number(pid), profile).then(() => toast('ok', `已提交迁移到 PID ${pid}`)).catch(error => toastRpcError(error, '进程迁移失败'));
+}
 
 // ── Interaction panel ──────────────────────────────────────────────────────
 const AGENT_COMMAND_SCHEMA = {
@@ -3436,7 +3520,7 @@ function openLootPanel() {
 
 // HTTP C2 profile editor. Advanced JSON remains the source of truth; the basic
 // form only merges fields it owns so unknown server options are preserved.
-async function openC2Editor(name) {
+async function openC2Editor(name, initialJSON = '', onSaved = null) {
   openViewPanel('_c2edit', `HTTP C2 配置档案${name ? ' — ' + name : ''}`,
     `<div class="studio-stack">
        <div class="segmented" role="tablist"><button class="active" data-c2-mode="basic">常用设置</button><button data-c2-mode="json">高级 JSON</button></div>
@@ -3449,7 +3533,8 @@ async function openC2Editor(name) {
        </div>
        <textarea id="c2-json" class="notes-area hidden" style="flex:1;min-height:300px;font-family:var(--mono);font-size:11px;line-height:1.5" spellcheck="false">正在加载...</textarea>
        <div style="display:flex;gap:8px;align-items:center">
-         <button id="c2-validate" class="btn">校验 JSON</button>
+         <button id="c2-import" class="btn">导入 JSON</button>
+         <button id="c2-validate" class="btn">模型校验</button>
          <button id="c2-save" class="btn accent">保存（覆盖）</button>
          <button id="c2-savenew" class="btn">另存为新档案</button>
          <span id="c2-status" style="font-size:11px;color:var(--muted)"></span>
@@ -3459,37 +3544,38 @@ async function openC2Editor(name) {
   const basic = document.getElementById('c2-basic');
   const parse = () => { try { return JSON.parse(ta.value || '{}'); } catch { return null; } };
   const fillBasic = cfg => {
-    const implant = cfg?.implantConfig || {}, server = cfg?.serverConfig || {};
-    document.getElementById('c2-name').value = cfg?.name || '';
-    document.getElementById('c2-ua').value = implant.userAgent || '';
-    document.getElementById('c2-chrome').value = implant.chromeBaseVersion || 0;
-    document.getElementById('c2-macos').value = implant.macOSVersion || '';
-    document.getElementById('c2-minfile').value = implant.minFileGen || 0;
-    document.getElementById('c2-maxfile').value = implant.maxFileGen || 0;
-    document.getElementById('c2-minpath').value = implant.minPathLength || 0;
-    document.getElementById('c2-maxpath').value = implant.maxPathLength || 0;
-    document.getElementById('c2-ext').value = (implant.extensions || []).join(', ');
-    document.getElementById('c2-random-version').checked = !!server.randomVersionHeaders;
+    const implant = cfg?.ImplantConfig || {}, server = cfg?.ServerConfig || {};
+    document.getElementById('c2-name').value = cfg?.Name || '';
+    document.getElementById('c2-ua').value = implant.UserAgent || '';
+    document.getElementById('c2-chrome').value = implant.ChromeBaseVersion || 0;
+    document.getElementById('c2-macos').value = implant.MacOSVersion || '';
+    document.getElementById('c2-minfile').value = implant.MinFileGen || 0;
+    document.getElementById('c2-maxfile').value = implant.MaxFileGen || 0;
+    document.getElementById('c2-minpath').value = implant.MinPathLength || 0;
+    document.getElementById('c2-maxpath').value = implant.MaxPathLength || 0;
+    document.getElementById('c2-ext').value = (implant.Extensions || []).join(', ');
+    document.getElementById('c2-random-version').checked = !!server.RandomVersionHeaders;
   };
   const mergeBasic = () => {
     const cfg = parse(); if (!cfg) throw new Error('JSON 格式无效，请先修正高级 JSON');
-    cfg.name = document.getElementById('c2-name').value.trim();
-    cfg.serverConfig ||= {}; cfg.implantConfig ||= {};
-    cfg.serverConfig.randomVersionHeaders = document.getElementById('c2-random-version').checked;
-    Object.assign(cfg.implantConfig, {
-      userAgent: document.getElementById('c2-ua').value,
-      chromeBaseVersion: parseInt(document.getElementById('c2-chrome').value) || 0,
-      macOSVersion: document.getElementById('c2-macos').value,
-      minFileGen: parseInt(document.getElementById('c2-minfile').value) || 0,
-      maxFileGen: parseInt(document.getElementById('c2-maxfile').value) || 0,
-      minPathLength: parseInt(document.getElementById('c2-minpath').value) || 0,
-      maxPathLength: parseInt(document.getElementById('c2-maxpath').value) || 0,
-      extensions: document.getElementById('c2-ext').value.split(',').map(v=>v.trim()).filter(Boolean),
+    cfg.Name = document.getElementById('c2-name').value.trim();
+    cfg.ServerConfig ||= {}; cfg.ImplantConfig ||= {};
+    cfg.ServerConfig.RandomVersionHeaders = document.getElementById('c2-random-version').checked;
+    Object.assign(cfg.ImplantConfig, {
+      UserAgent: document.getElementById('c2-ua').value,
+      ChromeBaseVersion: parseInt(document.getElementById('c2-chrome').value) || 0,
+      MacOSVersion: document.getElementById('c2-macos').value,
+      MinFileGen: parseInt(document.getElementById('c2-minfile').value) || 0,
+      MaxFileGen: parseInt(document.getElementById('c2-maxfile').value) || 0,
+      MinPathLength: parseInt(document.getElementById('c2-minpath').value) || 0,
+      MaxPathLength: parseInt(document.getElementById('c2-maxpath').value) || 0,
+      Extensions: document.getElementById('c2-ext').value.split(',').map(v=>v.trim()).filter(Boolean),
     });
     ta.value = JSON.stringify(cfg, null, 2); return cfg;
   };
-  if (name) { try { ta.value = await App().GetHTTPC2Profile(name); } catch (e) { ta.value = '{}'; status.textContent = rpcErrorMessage(e, '加载配置档案失败'); } }
-  else ta.value = JSON.stringify({name:'',serverConfig:{randomVersionHeaders:true},implantConfig:{extensions:[]}}, null, 2);
+  if (initialJSON) ta.value = initialJSON;
+  else if (name) { try { ta.value = await App().GetHTTPC2Profile(name); } catch (e) { ta.value = '{}'; status.textContent = rpcErrorMessage(e, '加载配置档案失败'); } }
+  else ta.value = JSON.stringify({Name:'',ServerConfig:{RandomVersionHeaders:true},ImplantConfig:{Extensions:[]}}, null, 2);
   fillBasic(parse());
   document.querySelectorAll('[data-c2-mode]').forEach(btn => btn.addEventListener('click', () => {
     try {
@@ -3498,15 +3584,26 @@ async function openC2Editor(name) {
       basic.classList.toggle('hidden', btn.dataset.c2Mode !== 'basic'); ta.classList.toggle('hidden', btn.dataset.c2Mode !== 'json'); status.textContent = '';
     } catch(e) { status.textContent = e.message; }
   }));
-  document.getElementById('c2-validate').addEventListener('click', () => {
-    try { mergeBasic(); JSON.parse(ta.value); status.textContent = 'JSON 格式正确'; status.style.color='var(--ok)'; }
-    catch(e) { status.textContent=e.message; status.style.color='var(--danger)'; }
+  document.getElementById('c2-import').addEventListener('click', async () => {
+    const imported = await App().ImportHTTPC2ProfileFile().catch(error => ({ error }));
+    if (!imported || imported.error) {
+      if (imported?.error) status.textContent = rpcErrorMessage(imported.error, '导入失败');
+      return;
+    }
+    ta.value = imported; fillBasic(parse()); status.textContent = '已导入，尚未保存到 Teamserver'; status.style.color='var(--info)';
+  });
+  document.getElementById('c2-validate').addEventListener('click', async () => {
+    try {
+      mergeBasic(); status.textContent = '正在按 Sliver 模型校验...';
+      const result = await App().ValidateHTTPC2Profile(ta.value);
+      status.textContent = `模型校验通过：${result.name}`; status.style.color='var(--ok)';
+    } catch(e) { status.textContent=rpcErrorMessage(e, '模型校验失败'); status.style.color='var(--danger)'; }
   });
   const save = async overwrite => {
     try { mergeBasic(); } catch(e) { status.textContent=e.message; return; }
     if (!ta.value.trim()) { status.textContent = '没有可保存的内容'; return; }
     status.textContent = '正在保存...';
-    try { await App().SaveHTTPC2Profile(ta.value, overwrite); status.textContent = '✓ 已保存'; toast('ok', 'HTTP C2 配置档案已保存'); }
+    try { await App().SaveHTTPC2Profile(ta.value, overwrite); status.textContent = '已保存'; toast('ok', 'HTTP C2 配置档案已保存'); if (onSaved) await onSaved(parse()?.Name || ''); }
     catch (e) { status.textContent = rpcErrorMessage(e, '保存失败'); toastRpcError(e, '保存 C2 配置档案失败'); }
   };
   document.getElementById('c2-save').addEventListener('click', () => save(true));
@@ -3633,8 +3730,11 @@ function profilesContent() {
             <div class="gen-field"><label>重连间隔（秒）</label><input name="reconnectInterval" type="number" min="0" value="60"/></div>
             <div class="gen-field"><label>最大连接错误</label><input name="maxConnectionErrors" type="number" min="0" value="1000"/></div>
             <div class="gen-field"><label>长轮询超时（秒）</label><input name="pollTimeout" type="number" min="0" value="360"/></div>
-            <div class="gen-field"><label>HTTP C2 档案</label><input name="httpC2Profile" placeholder="default"/></div>
+            <div class="gen-field http-c2-field"><label>HTTP C2 档案</label><select name="httpC2Profile" id="prof-http-c2"><option value="">正在读取 Teamserver...</option></select><span id="prof-http-c2-note" class="field-note">仅在 C2 包含 HTTP/HTTPS 时启用。</span></div>
             <div class="gen-field"><label>流量编码器（逗号分隔）</label><input name="trafficEncoders" placeholder="gzip"/></div>
+          </div>
+          <div class="http-c2-actions" id="prof-http-c2-actions">
+            <button type="button" class="btn small" data-http-c2-action="view">查看</button><button type="button" class="btn small" data-http-c2-action="new">新建</button><button type="button" class="btn small" data-http-c2-action="import">导入</button><button type="button" class="btn small" data-http-c2-action="edit">编辑</button><button type="button" class="btn small" data-http-c2-action="validate">验证</button><button type="button" class="btn small" data-http-c2-action="refresh">刷新</button>
           </div>
           <div class="gen-field"><label>Canary 域名（逗号或换行分隔）</label><textarea name="canaryDomains" rows="2" placeholder="canary.example.com"></textarea></div>
         </fieldset>
@@ -3669,6 +3769,56 @@ function parseProfileC2(value) {
 }
 function wireProfileForm() {
   const f = document.getElementById('prof-form'); if (!f) return;
+  const httpSelect = f.httpC2Profile, httpNote = document.getElementById('prof-http-c2-note');
+  const httpActions = [...document.querySelectorAll('[data-http-c2-action]')];
+  const hasHTTPTransport = () => parseProfileC2(f.c2Entries.value).some(entry => /^https?:\/\//i.test(entry.url));
+  const refreshHTTPProfiles = async preferred => {
+    const current = preferred || httpSelect.value;
+    httpSelect.innerHTML = '<option value="">正在读取 Teamserver...</option>';
+    const result = await App().ListHTTPC2Profiles().then(profiles => ({ profiles })).catch(error => ({ error }));
+    if (result.error) {
+      httpSelect.innerHTML = '<option value="">读取失败</option>'; httpNote.textContent = rpcErrorMessage(result.error, '无法读取 HTTP C2 档案');
+      updateHTTPState(); return;
+    }
+    httpSelect.innerHTML = '<option value="">自动选择</option>' + (result.profiles || []).map(profile => `<option value="${esc(profile.name)}">${esc(profile.name)}</option>`).join('');
+    if ([...httpSelect.options].some(option => option.value === current)) httpSelect.value = current;
+    updateHTTPState();
+  };
+  const updateHTTPState = () => {
+    const enabled = hasHTTPTransport();
+    httpSelect.disabled = !enabled;
+    httpNote.textContent = enabled ? '来自当前 Teamserver；留空时自动选择。' : '当前 C2 不含 HTTP/HTTPS，此字段不会提交。';
+    httpActions.forEach(button => {
+      const action = button.dataset.httpC2Action;
+      button.disabled = ['view','edit','validate'].includes(action) && !httpSelect.value;
+    });
+  };
+  f.c2Entries.addEventListener('input', updateHTTPState);
+  httpSelect.addEventListener('change', updateHTTPState);
+  document.getElementById('prof-http-c2-actions')?.addEventListener('click', async event => {
+    const button = event.target.closest('[data-http-c2-action]'); if (!button || button.disabled) return;
+    const action = button.dataset.httpC2Action, selected = httpSelect.value;
+    if (action === 'refresh') return refreshHTTPProfiles();
+    if (action === 'new') return openC2Editor('', '', refreshHTTPProfiles);
+    if (action === 'import') {
+      const imported = await App().ImportHTTPC2ProfileFile().catch(error => ({ error }));
+      if (!imported || imported.error) { if (imported?.error) toastRpcError(imported.error, '导入 HTTP C2 档案失败'); return; }
+      return openC2Editor('', imported, refreshHTTPProfiles);
+    }
+    if (!selected) return toast('info', '请先选择 HTTP C2 档案');
+    if (action === 'view') {
+      const json = await App().GetHTTPC2Profile(selected).catch(error => ({ error }));
+      if (json?.error) return toastRpcError(json.error, '读取 HTTP C2 档案失败');
+      openViewPanel('_c2view', `HTTP C2 档案 - ${selected}`, `<pre class="c2-profile-preview">${esc(json)}</pre>`); return;
+    }
+    if (action === 'edit') return openC2Editor(selected, '', refreshHTTPProfiles);
+    if (action === 'validate') {
+      const json = await App().GetHTTPC2Profile(selected).catch(error => ({ error }));
+      if (json?.error) return toastRpcError(json.error, '读取 HTTP C2 档案失败');
+      const result = await App().ValidateHTTPC2Profile(json).catch(error => ({ error }));
+      if (result.error) toastRpcError(result.error, 'HTTP C2 档案验证失败'); else toast('ok', `${result.name} 已通过 Sliver 模型校验`);
+    }
+  });
   document.getElementById('prof-beacon')?.addEventListener('change', function() {
     document.getElementById('prof-beacon-opts').classList.toggle('hidden', !this.checked);
   });
@@ -3678,14 +3828,16 @@ function wireProfileForm() {
     e.preventDefault();
     const c2 = parseProfileC2(f.c2Entries.value);
     const splitList = value => String(value || '').split(/[\r\n,]+/).map(v => v.trim()).filter(Boolean);
-    const req = { name:f.name.value.trim(), goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2, c2Url:c2[0]?.url||'', debug:f.debug.checked, evasion:f.evasion.checked, obfuscateSymbols:f.obfuscateSymbols.checked, netGo:f.netGo.checked, runAtLoad:f.runAtLoad.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0, connectionStrategy:f.connectionStrategy.value, reconnectInterval:parseInt(f.reconnectInterval.value)||0, maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0, pollTimeout:parseInt(f.pollTimeout.value)||0, httpC2Profile:f.httpC2Profile.value.trim(), trafficEncoders:splitList(f.trafficEncoders.value), templateName:f.templateName.value.trim(), canaryDomains:splitList(f.canaryDomains.value), limitDomainJoined:f.limitDomainJoined.checked, limitDatetime:f.limitDatetime.value.trim(), limitHostname:f.limitHostname.value.trim(), limitUsername:f.limitUsername.value.trim(), limitFileExists:f.limitFileExists.value.trim(), limitLocale:f.limitLocale.value.trim() };
+    const req = { name:f.name.value.trim(), goos:f.goos.value, goarch:f.goarch.value, format:f.format.value, c2, c2Url:c2[0]?.url||'', debug:f.debug.checked, evasion:f.evasion.checked, obfuscateSymbols:f.obfuscateSymbols.checked, netGo:f.netGo.checked, runAtLoad:f.runAtLoad.checked, beacon:f.beacon.checked, interval:parseInt(f.interval?.value)||60, jitter:parseInt(f.jitter?.value)||0, connectionStrategy:f.connectionStrategy.value, reconnectInterval:parseInt(f.reconnectInterval.value)||0, maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0, pollTimeout:parseInt(f.pollTimeout.value)||0, httpC2Profile:hasHTTPTransport()?f.httpC2Profile.value:'', trafficEncoders:splitList(f.trafficEncoders.value), templateName:f.templateName.value.trim(), canaryDomains:splitList(f.canaryDomains.value), limitDomainJoined:f.limitDomainJoined.checked, limitDatetime:f.limitDatetime.value.trim(), limitHostname:f.limitHostname.value.trim(), limitUsername:f.limitUsername.value.trim(), limitFileExists:f.limitFileExists.value.trim(), limitLocale:f.limitLocale.value.trim() };
     const msg = document.getElementById('prof-msg');
     if (!c2.length) { msg.textContent = '请至少填写一条有效的 C2 URL'; msg.className = 'status-msg err'; return; }
     msg.textContent = '正在保存...'; msg.className = 'status-msg';
     const r = await App().SaveImplantProfile(req).then(() => null).catch(e => e);
     if (r) { msg.textContent = rpcErrorMessage(r, '保存配置档案失败'); msg.className = 'status-msg err'; }
-    else { msg.textContent = '配置档案已保存'; msg.className = 'status-msg ok'; f.reset(); f.obfuscateSymbols.checked = true; document.getElementById('prof-beacon-opts').classList.add('hidden'); refreshProfilesList(); }
+    else { msg.textContent = '配置档案已保存'; msg.className = 'status-msg ok'; f.reset(); f.obfuscateSymbols.checked = true; document.getElementById('prof-beacon-opts').classList.add('hidden'); updateHTTPState(); refreshProfilesList(); }
   });
+  updateHTTPState();
+  refreshHTTPProfiles();
 }
 async function refreshProfilesList() {
   const targets = document.querySelectorAll('[data-profiles-list]');
@@ -3830,15 +3982,17 @@ function openGeneratePanel() {
       const c2 = profileC2.length
         ? profileC2.map((entry, index) => index === 0 ? {...entry, url:f.c2Url.value} : entry)
         : [];
-      return {...f._profileConfig,name:f.name.value,goos:f.goos.value,goarch:f.goarch.value,format:f.format.value,c2,c2Url:f.c2Url.value,debug:f.debug.checked,beacon:f.beacon.checked,interval:parseInt(f.interval?.value)||60,jitter:parseInt(f.jitter?.value)||0,httpC2Profile:f.httpC2Profile.value,connectionStrategy:f.connectionStrategy.value,reconnectInterval:parseInt(f.reconnectInterval.value)||0,maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0,pollTimeout:f._profileConfig.pollTimeout||0,trafficEncoders:f.trafficEncoder.value?[f.trafficEncoder.value]:(f._profileConfig.trafficEncoders||[]),metadataPath:f.metadataPath.value};
+      return {...f._profileConfig,name:f.name.value,goos:f.goos.value,goarch:f.goarch.value,format:f.format.value,c2,c2Url:f.c2Url.value,debug:f.debug.checked,beacon:f.beacon.checked,interval:parseInt(f.interval?.value)||60,jitter:parseInt(f.jitter?.value)||0,httpC2Profile:hasHTTPTransport()?f.httpC2Profile.value:'',connectionStrategy:f.connectionStrategy.value,reconnectInterval:parseInt(f.reconnectInterval.value)||0,maxConnectionErrors:parseInt(f.maxConnectionErrors.value)||0,pollTimeout:f._profileConfig.pollTimeout||0,trafficEncoders:f.trafficEncoder.value?[f.trafficEncoder.value]:(f._profileConfig.trafficEncoders||[]),metadataPath:f.metadataPath.value};
     };
-    const invalidate = () => { submit.disabled=true; document.getElementById('gen-preflight-result').innerHTML='<span>配置已变化，请重新执行预检。</span>'; };
+    const hasHTTPTransport = () => /^https?:\/\//i.test(f.c2Url.value.trim());
+    const updateHTTPState = () => { f.httpC2Profile.disabled=!hasHTTPTransport(); };
+    const invalidate = () => { updateHTTPState(); submit.disabled=true; document.getElementById('gen-preflight-result').innerHTML='<span>配置已变化，请重新执行预检。</span>'; };
     f.addEventListener('input', invalidate); f.addEventListener('change', invalidate);
     document.getElementById('gen-pick-metadata').addEventListener('click', async()=>{ const path=await App().PickPEMetadataFile().catch(()=> ''); if(path){f.metadataPath.value=path;invalidate();} });
     document.getElementById('gen-clear-metadata').addEventListener('click',()=>{f.metadataPath.value='';invalidate();});
     const [profiles,httpProfiles,encoders] = await Promise.all([App().ListImplantProfiles().catch(()=>[]),App().ListC2Profiles().catch(()=>[]),App().ListTrafficEncoders().catch(()=>[])]);
     const profileSel=document.getElementById('gen-profile'); profileSel.innerHTML='<option value="">自定义配置</option>'+profiles.map((p,i)=>`<option value="${i}">${esc(p.name)}</option>`).join('');
-    f.httpC2Profile.innerHTML='<option value="">自动选择</option>'+httpProfiles.map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+    f.httpC2Profile.innerHTML='<option value="">自动选择</option>'+httpProfiles.map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join(''); updateHTTPState();
     f.trafficEncoder.innerHTML='<option value="">不使用</option>'+encoders.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
     profileSel.addEventListener('change',()=>{const p=profiles[parseInt(profileSel.value)];f._profileConfig=p||{};if(!p)return;Object.entries({goos:p.goos,goarch:p.goarch,format:p.format,c2Url:p.c2Url,httpC2Profile:p.httpC2Profile,connectionStrategy:p.connectionStrategy,reconnectInterval:p.reconnectInterval,maxConnectionErrors:p.maxConnectionErrors}).forEach(([k,v])=>{if(v!==undefined&&v!==null&&f[k])f[k].value=v;});f.debug.checked=!!p.debug;f.beacon.checked=!!p.beacon;document.getElementById('gbeacon-opts').style.display=p.beacon?'flex':'none';if(p.interval)f.interval.value=p.interval;if(p.jitter>=0)f.jitter.value=p.jitter;if(p.trafficEncoders?.length)f.trafficEncoder.value=p.trafficEncoders[0];invalidate();});
     document.getElementById('gen-preflight').addEventListener('click',async()=>{const box=document.getElementById('gen-preflight-result');box.innerHTML='<span>正在检查依赖...</span>';const r=await App().PreflightImplant(readReq()).catch(error=>({error}));if(r.error){box.innerHTML=rpcErrorHtml(r.error,'预检失败');submit.disabled=true;return;}const issues=[...(r.errors||[]).map(v=>`<li class="err">${esc(v)}</li>`),...(r.warnings||[]).map(v=>`<li class="warn">${esc(v)}</li>`)];box.innerHTML=`<strong>${r.valid?'预检通过':'预检未通过'}</strong><ul>${(r.effectiveSummary||[]).map(v=>`<li>${esc(v)}</li>`).join('')}${issues.join('')}</ul>${r.availableBuilders?.length?`<span>可用外部 Builder：${esc(r.availableBuilders.join(', '))}</span>`:''}`;submit.disabled=!r.valid;});
@@ -3851,7 +4005,7 @@ function openGeneratePanel() {
         ? '<option value="">- 选择活动监听器 -</option>' + urls.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join('')
         : '<option value="">- 暂无活动监听器 -</option>';
       if (urls.length && c2 && !c2.value.trim()) { sel.value = urls[0]; c2.value = urls[0]; }
-      sel.addEventListener('change', () => { if (sel.value && c2) c2.value = sel.value; });
+      sel.addEventListener('change', () => { if (sel.value && c2) { c2.value = sel.value; invalidate(); } });
     }
     f.addEventListener('submit', async e => {
       e.preventDefault(); const f = e.target;
@@ -4292,23 +4446,11 @@ async function openProcessBrowser(sessionID) {
     });
     container.querySelector(`#proc-migrate-btn-${dockId}`)?.addEventListener('click', () => {
       if (!selectedPID) { toast('info', '请先选择一个进程'); return; }
-      toast('info', `迁移到 PID ${selectedPID}：请在控制台执行“migrate ${selectedPID} <profile>”`);
+      openMigrateDialog(sessionID, selectedPID);
     });
   }
   loadProcs();
 }
-
-// ── Context Menu Handlers for File/Process Browser ───────────────────────────
-document.getElementById('ctx-files')?.addEventListener('click', () => {
-  if (activeCtxAgent && activeCtxAgent.kind === 'session') openFileBrowser(activeCtxAgent.obj.id);
-  else if (activeCtxAgent) toast('info', '文件浏览器需要交互式会话，不能用于信标');
-  document.getElementById('ctx-menu').classList.add('hidden');
-});
-document.getElementById('ctx-processes')?.addEventListener('click', () => {
-  if (activeCtxAgent && activeCtxAgent.kind === 'session') openProcessBrowser(activeCtxAgent.obj.id);
-  else if (activeCtxAgent) toast('info', '进程浏览器需要交互式会话，不能用于信标');
-  document.getElementById('ctx-menu').classList.add('hidden');
-});
 
 // ── Auto-start timer on first beacon ─────────────────────────────────────────
 function onFirstAgent() {

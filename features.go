@@ -372,6 +372,13 @@ type HTTPC2View struct {
 	Created int64  `json:"created"`
 }
 
+// HTTPC2Validation is returned by the local protobuf validation endpoint. It
+// never persists the submitted profile or sends it to the teamserver.
+type HTTPC2Validation struct {
+	Valid bool   `json:"valid"`
+	Name  string `json:"name,omitempty"`
+}
+
 // ListHTTPC2Profiles returns the teamserver's HTTP C2 profiles.
 func (a *App) ListHTTPC2Profiles() ([]HTTPC2View, error) {
 	client, err := a.requireClient()
@@ -550,6 +557,50 @@ func (a *App) GetHTTPC2Profile(name string) (string, error) {
 	return string(b), nil
 }
 
+func parseHTTPC2Profile(profileJSON string) (*clientpb.HTTPC2Config, error) {
+	var cfg clientpb.HTTPC2Config
+	if err := protojson.Unmarshal([]byte(profileJSON), &cfg); err != nil {
+		return nil, fmt.Errorf("invalid profile JSON: %w", err)
+	}
+	if strings.TrimSpace(cfg.Name) == "" {
+		return nil, fmt.Errorf("profile must have a \"name\"")
+	}
+	return &cfg, nil
+}
+
+// ValidateHTTPC2Profile validates JSON against Sliver's protobuf model without
+// saving it or requiring an active teamserver connection.
+func (a *App) ValidateHTTPC2Profile(profileJSON string) (HTTPC2Validation, error) {
+	cfg, err := parseHTTPC2Profile(profileJSON)
+	if err != nil {
+		return HTTPC2Validation{}, err
+	}
+	return HTTPC2Validation{Valid: true, Name: cfg.Name}, nil
+}
+
+// ImportHTTPC2ProfileFile reads a local JSON file selected through the guarded
+// native dialog. The caller must explicitly save it to persist it remotely.
+func (a *App) ImportHTTPC2ProfileFile() (string, error) {
+	path, err := a.safeOpenFileDialog(runtime.OpenDialogOptions{
+		Title: "导入 HTTP C2 配置档案",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "JSON 文件 (*.json)", Pattern: "*.json"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil || path == "" {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := parseHTTPC2Profile(string(data)); err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // SaveHTTPC2Profile validates an edited HTTP C2 profile (protojson) and saves it
 // back to the teamserver. overwrite=true updates an existing profile; false
 // creates a new one (and fails if the name already exists).
@@ -558,17 +609,14 @@ func (a *App) SaveHTTPC2Profile(profileJSON string, overwrite bool) error {
 	if err != nil {
 		return err
 	}
-	var cfg clientpb.HTTPC2Config
-	if uerr := protojson.Unmarshal([]byte(profileJSON), &cfg); uerr != nil {
-		return fmt.Errorf("invalid profile JSON: %w", uerr)
-	}
-	if strings.TrimSpace(cfg.Name) == "" {
-		return fmt.Errorf("profile must have a \"name\"")
+	cfg, err := parseHTTPC2Profile(profileJSON)
+	if err != nil {
+		return err
 	}
 	a.audit.log("c2profile-save", cfg.Name, fmt.Sprintf("overwrite=%v", overwrite))
 	_, err = client.RPC.SaveHTTPC2Profile(a.ctx, &clientpb.HTTPC2ConfigReq{
 		Overwrite: overwrite,
-		C2Config:  &cfg,
+		C2Config:  cfg,
 	})
 	return err
 }
