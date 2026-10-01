@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -394,18 +395,20 @@ func (a *App) ExecuteCommand(sessionID, command string) ExecResult {
 			break
 		}
 	}
-	var exePath string
-	var args []string
 	if strings.Contains(sessionOS, "windows") {
-		exePath = "cmd.exe"
-		args = []string{"/c", command}
-	} else {
-		exePath = "/bin/sh"
-		args = []string{"-c", command}
+		resp, err := client.RPC.ExecuteWindows(a.ctx, commandExecuteWindowsRequest(sessionID, command))
+		if err != nil {
+			return ExecResult{Error: err.Error()}
+		}
+		return ExecResult{
+			Stdout: decodeCommandOutput(resp.Stdout, sessionOS),
+			Stderr: decodeCommandOutput(resp.Stderr, sessionOS),
+			Status: resp.Status,
+		}
 	}
 	resp, err := client.RPC.Execute(a.ctx, &sliverpb.ExecuteReq{
-		Path:    exePath,
-		Args:    args,
+		Path:    "/bin/sh",
+		Args:    []string{"-c", command},
 		Output:  true,
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
@@ -416,6 +419,16 @@ func (a *App) ExecuteCommand(sessionID, command string) ExecResult {
 		Stdout: decodeCommandOutput(resp.Stdout, sessionOS),
 		Stderr: decodeCommandOutput(resp.Stderr, sessionOS),
 		Status: resp.Status,
+	}
+}
+
+func commandExecuteWindowsRequest(sessionID, command string) *sliverpb.ExecuteWindowsReq {
+	return &sliverpb.ExecuteWindowsReq{
+		Path:       "cmd.exe",
+		Args:       []string{"/c", command},
+		Output:     true,
+		HideWindow: true,
+		Request:    &commonpb.Request{SessionID: sessionID},
 	}
 }
 
@@ -1045,6 +1058,12 @@ func (a *App) downloadFile(ctx context.Context, sessionID, remotePath string) Tr
 	if err != nil {
 		return TransferResult{Error: "decode: " + err.Error()}
 	}
+	if resp.IsDir {
+		data, err = normalizeDirectoryArchive(data, remotePath)
+		if err != nil {
+			return TransferResult{Error: "normalize directory archive: " + err.Error()}
+		}
+	}
 	defaultName := downloadDefaultName(remotePath, resp)
 	savePath, err := a.safeSaveFileDialog(runtime.SaveDialogOptions{
 		DefaultFilename: defaultName,
@@ -1086,6 +1105,98 @@ func decodeDownload(resp *sliverpb.Download) ([]byte, error) {
 		return io.ReadAll(gz)
 	}
 	return resp.Data, nil
+}
+
+func normalizeDirectoryArchive(data []byte, remotePath string) ([]byte, error) {
+	root := remoteArchiveSegments(remotePath)
+	if len(root) == 0 {
+		root = []string{"download"}
+	}
+	rootName := root[len(root)-1]
+
+	var output bytes.Buffer
+	gz := gzip.NewWriter(&output)
+	tw := tar.NewWriter(gz)
+	tr := tar.NewReader(bytes.NewReader(data))
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		segments, err := safeArchiveSegments(header.Name)
+		if err != nil {
+			return nil, err
+		}
+		relative := archiveRelativeSegments(segments, root)
+		name := rootName
+		if len(relative) > 0 {
+			name += "/" + strings.Join(relative, "/")
+		}
+		copyHeader := *header
+		copyHeader.Name = name
+		copyHeader.Linkname = ""
+		if err := tw.WriteHeader(&copyHeader); err != nil {
+			return nil, err
+		}
+		if header.Typeflag == tar.TypeReg || header.Typeflag == tar.TypeRegA {
+			if _, err := io.Copy(tw, tr); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
+}
+
+func remoteArchiveSegments(path string) []string {
+	segments, _ := safeArchiveSegments(strings.ReplaceAll(path, ":", ""))
+	return segments
+}
+
+func safeArchiveSegments(name string) ([]string, error) {
+	name = strings.ReplaceAll(name, "\\", "/")
+	parts := strings.Split(strings.Trim(name, "/"), "/")
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSuffix(strings.TrimSpace(part), ":")
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			return nil, errors.New("archive contains a parent path")
+		}
+		segments = append(segments, part)
+	}
+	return segments, nil
+}
+
+func archiveRelativeSegments(entry, root []string) []string {
+	if len(root) > 0 && len(entry) >= len(root) {
+		for start := 0; start <= len(entry)-len(root); start++ {
+			matches := true
+			for index := range root {
+				if !strings.EqualFold(entry[start+index], root[index]) {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				return entry[start+len(root):]
+			}
+		}
+	}
+	if len(entry) > 0 && strings.EqualFold(entry[0], root[len(root)-1]) {
+		return entry[1:]
+	}
+	return entry
 }
 
 func (a *App) UploadFile(sessionID, remotePath string) TransferResult {

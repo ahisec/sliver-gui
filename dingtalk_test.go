@@ -131,12 +131,15 @@ func TestSendDingTalkTextRejectsBusinessError(t *testing.T) {
 	}
 }
 
-func TestDingTalkNoticeTextExcludesIdentifiersAndSensitiveFields(t *testing.T) {
-	text := dingTalkNoticeText(DingTalkAgentNotice{Kind: "session", Hostname: "host-1", Username: "user", OS: "windows", Arch: "amd64"}, time.Unix(0, 0))
-	for _, expected := range []string{"Session", "host-1", "user", "windows/amd64"} {
+func TestDingTalkNoticeTextUsesRequestedAgentSummary(t *testing.T) {
+	text := dingTalkNoticeText(DingTalkAgentNotice{Kind: "session", IP: "203.0.113.8", Username: "user", Privilege: "HIGH", OS: "windows", Arch: "amd64"}, time.Unix(0, 0))
+	for _, expected := range []string{"Session", "IP：203.0.113.8", "用户：user（HIGH）", "系统：windows/amd64", "时间："} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("notice is missing %q: %s", expected, text)
 		}
+	}
+	if strings.Contains(text, "主机：") {
+		t.Fatalf("notice still contains the removed hostname field: %s", text)
 	}
 }
 

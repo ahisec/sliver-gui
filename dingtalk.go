@@ -42,11 +42,12 @@ type DingTalkConfigView struct {
 }
 
 type DingTalkAgentNotice struct {
-	Kind     string `json:"kind"`
-	Hostname string `json:"hostname"`
-	Username string `json:"username"`
-	OS       string `json:"os"`
-	Arch     string `json:"arch"`
+	Kind      string `json:"kind"`
+	IP        string `json:"ip"`
+	Username  string `json:"username"`
+	Privilege string `json:"privilege"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
 }
 
 type dingTalkStoredConfig struct {
@@ -229,8 +230,8 @@ func dingTalkNoticeText(notice DingTalkAgentNotice, now time.Time) string {
 		}
 		return text
 	}
-	return fmt.Sprintf("【Sliver GUI】新 %s 上线\n主机：%s\n用户：%s\n系统：%s/%s\n时间：%s",
-		kind, value(notice.Hostname), value(notice.Username), value(notice.OS), value(notice.Arch), now.Local().Format("2006-01-02 15:04:05"))
+	return fmt.Sprintf("【Sliver GUI】新 %s 上线\nIP：%s\n用户：%s（%s）\n系统：%s/%s\n时间：%s",
+		kind, value(notice.IP), value(notice.Username), value(notice.Privilege), value(notice.OS), value(notice.Arch), now.Local().Format("2006-01-02 15:04:05"))
 }
 
 func sendDingTalkText(ctx context.Context, client *http.Client, cfg dingTalkStoredConfig, text string, now time.Time) error {

@@ -126,13 +126,9 @@ function uiDialog({ title, message, input, placeholder, okLabel = '确定', dang
     const done = val => { ov.remove(); document.removeEventListener('keydown', onKey); resolve(val); };
     const onOk = () => done(input ? (inp.value || '') : true);
     const onCancel = () => done(input ? null : false);
-    function onKey(e) {
-      if (e.key === 'Escape') onCancel();
-      else if (e.key === 'Enter') onOk();
-    }
+    function onKey() {}
     ov.querySelector('#ui-dlg-ok').addEventListener('click', onOk);
     ov.querySelector('#ui-dlg-cancel').addEventListener('click', onCancel);
-    ov.addEventListener('click', e => { if (e.target === ov) onCancel(); });
     document.addEventListener('keydown', onKey);
   });
 }
@@ -145,10 +141,9 @@ function uiSelectDialog(message, options, opts = {}) {
     document.body.appendChild(ov);
     const select = ov.querySelector('select'); select.focus();
     const done = value => { ov.remove(); document.removeEventListener('keydown', onKey); resolve(value); };
-    const onKey = event => { if (event.key === 'Escape') done(null); else if (event.key === 'Enter') done(select.value); };
+    const onKey = () => {};
     ov.querySelector('[data-dialog-cancel]').addEventListener('click', () => done(null));
     ov.querySelector('[data-dialog-ok]').addEventListener('click', () => done(select.value));
-    ov.addEventListener('click', event => { if (event.target === ov) done(null); });
     document.addEventListener('keydown', onKey);
   });
 }
@@ -182,6 +177,9 @@ function integrityLabel(obj) {
   if (!lvl) return '';
   if ((obj.username || '').trim().endsWith('$') || (obj.username || '').toLowerCase().includes('system')) return 'SYSTEM';
   return lvl.toUpperCase();
+}
+function privilegeLabel(obj) {
+  return integrityLabel(obj) || (isPrivileged(obj) ? '高权限' : '权限未检查');
 }
 function osLabel(os) {
   const o = (os||'').toLowerCase();
@@ -363,10 +361,19 @@ async function handleAgentOnline(kind, agent) {
   const event = { category:'agent', level:'info', title:`${label} 上线`, message:`${label} 已上线：${agent.hostname || '未知主机'}`, tag:`${kind}-online-${agent.id}` };
   if (!NotificationRules.shouldNotify(event, notificationSettings)) return;
   notifyOperational(event);
+  if (kind === 'session' && agent.id && !integrityMap[agent.id]) {
+    const privileges = await App().GetPrivs(agent.id).catch(() => null);
+    if (privileges?.integrity) {
+      integrityMap[agent.id] = privileges.integrity;
+      saveAgentState();
+      renderTable();
+    }
+  }
   const error = await App().NotifyDingTalkAgentOnline({
     kind,
-    hostname: agent.hostname || '',
+    ip: RemoteAddress.sourceIP(agent.remoteAddress),
     username: agent.username || '',
+    privilege: privilegeLabel(agent),
     os: agent.os || '',
     arch: agent.arch || '',
   }).then(() => null).catch(value => value);
@@ -450,10 +457,10 @@ document.getElementById('refresh-all-btn').addEventListener('click', refreshAgen
 // ── Table view ─────────────────────────────────────────────────────────────
 // userCell renders the user column, highlighting privileged (SYSTEM/admin/★) agents.
 function userCell(o) {
-  const il = integrityLabel(o);
+  const permission = privilegeLabel(o);
   return isPrivileged(o)
-    ? `<td class="user-priv" title="高权限（右键检查完整性级别以获取实际级别）">★ ${esc(o.username)}${il ? ` [${il}]` : ''}</td>`
-    : `<td>${esc(o.username)}${il ? ` <span style="color:var(--muted)">[${il}]</span>` : ''}</td>`;
+    ? `<td class="user-priv" title="高权限；右键检查完整性级别可获取实际级别">★ ${esc(o.username)} [${esc(permission)}]</td>`
+    : `<td>${esc(o.username)} <span style="color:var(--muted)">[${esc(permission)}]</span></td>`;
 }
 function renderTable() {
   const body = document.getElementById('agents-body');
@@ -986,9 +993,8 @@ function openSessionSleepDialog(obj) {
     ov.remove();
     document.removeEventListener('keydown', onKey);
   };
-  const onKey = event => { if (event.key === 'Escape') close(); };
+  const onKey = () => {};
   ov.querySelector('[data-dialog-cancel]').addEventListener('click', close);
-  ov.addEventListener('click', event => { if (event.target === ov) close(); });
   document.addEventListener('keydown', onKey);
   form.addEventListener('submit', async event => {
     event.preventDefault();
@@ -3059,7 +3065,7 @@ taskStore.subscribe(tasks => {
 
 // ── Script Manager Panel (Cobalt Strike-style lateral movement / privesc / persistence) ──
 // ── Script Manager Panel (Cobalt Strike-style lateral movement / privesc / persistence) ──
-async function openScriptsPanel() {
+async function openScriptsPanel(target = null) {
   const scripts = await App().ListScripts().catch(() => []);
   const sessions = allSessions.filter(s => s.id);
 
@@ -3121,7 +3127,7 @@ async function openScriptsPanel() {
         <div class="scr-output-wrap">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
             <label style="color:var(--cyan);font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase">控制台输出 / 预览</label>
-            <button class="btn small" onclick="document.getElementById('scr-output').textContent='请选择脚本，然后点击预览或执行...';">清空</button>
+            <button class="btn small" data-scr-clear>清空</button>
           </div>
           <pre id="scr-output" class="scr-output">请在左侧选择脚本方案，配置参数后运行...</pre>
         </div>
@@ -3129,7 +3135,10 @@ async function openScriptsPanel() {
     </div>
   </div>`;
 
-  openViewPanel('scripts', '脚本管理器', html);
+  if (target) target.innerHTML = html;
+  else openViewPanel('scripts', '脚本管理器', html);
+  const root = target || document.getElementById('modal-body');
+  if (!root) return;
 
   // Script selection state
   let currentScript = null;
@@ -3137,13 +3146,17 @@ async function openScriptsPanel() {
   const scriptMap = {};
   scripts.forEach(s => { scriptMap[s.method] = s; });
 
-  const paramCard = document.getElementById('scr-param-card');
-  const cardTitle = document.getElementById('scr-card-title');
-  const cardDesc = document.getElementById('scr-card-desc');
-  const formGrid = document.getElementById('scr-form-grid');
-  const btnPreview = document.getElementById('scr-btn-preview');
-  const btnExec = document.getElementById('scr-btn-exec');
-  const out = document.getElementById('scr-output');
+  const paramCard = root.querySelector('#scr-param-card');
+  const cardTitle = root.querySelector('#scr-card-title');
+  const cardDesc = root.querySelector('#scr-card-desc');
+  const formGrid = root.querySelector('#scr-form-grid');
+  const btnPreview = root.querySelector('#scr-btn-preview');
+  const btnExec = root.querySelector('#scr-btn-exec');
+  const out = root.querySelector('#scr-output');
+  root.querySelector('[data-scr-clear]')?.addEventListener('click', () => {
+    out.textContent = '请选择脚本，然后点击预览或执行...';
+    out.style.color = '';
+  });
 
   function selectScript(method) {
     const s = scriptMap[method];
@@ -3151,7 +3164,7 @@ async function openScriptsPanel() {
     currentScript = s;
 
     // Update active button state
-    document.querySelectorAll('.scr-btn').forEach(b => {
+    root.querySelectorAll('.scr-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.method === method);
     });
 
@@ -3192,15 +3205,23 @@ async function openScriptsPanel() {
     const map = {};
     if (currentScript.params) {
       currentScript.params.forEach(p => {
-        const el = document.getElementById(`scr-field-${p.name}`);
+        const el = root.querySelector(`#scr-field-${CSS.escape(p.name)}`);
         if (el) map[p.name] = el.value;
       });
     }
     return map;
   }
 
+  function validateParams() {
+    const missing = (currentScript?.params || []).filter(param => param.required && !String(getParamMap()[param.name] || '').trim());
+    if (!missing.length) return true;
+    out.textContent = `[!] 请填写必填参数：${missing.map(param => param.label).join('、')}`;
+    out.style.color = 'var(--accent)';
+    return false;
+  }
+
   // Bind category button clicks
-  document.querySelectorAll('.scr-btn').forEach(btn => {
+  root.querySelectorAll('.scr-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       selectScript(btn.dataset.method);
     });
@@ -3214,7 +3235,8 @@ async function openScriptsPanel() {
   // Preview button handler
   btnPreview.addEventListener('click', async () => {
     if (!currentScript) return;
-    const sid = document.getElementById('scr-session').value;
+    if (!validateParams()) return;
+    const sid = root.querySelector('#scr-session').value;
     if (!sid) { out.textContent = '[!] 请先选择跳板会话'; return; }
 
     out.textContent = `[*] 正在为 ${currentScript.name} 生成模拟运行预览...`;
@@ -3240,7 +3262,8 @@ async function openScriptsPanel() {
   // Execute button handler
   btnExec.addEventListener('click', async () => {
     if (!currentScript) return;
-    const sid = document.getElementById('scr-session').value;
+    if (!validateParams()) return;
+    const sid = root.querySelector('#scr-session').value;
     if (!sid) { out.textContent = '[!] 请先选择跳板会话'; return; }
 
     const method = currentScript.method;
@@ -3379,7 +3402,7 @@ async function openScriptsPanel() {
   });
 }
 
-function pinScripts() {
+async function pinScripts() {
   hideModal();
   const id = '_scripts_dock';
   if (openTabs[id]) { activateTab(id); return; }
@@ -3393,17 +3416,8 @@ function pinScripts() {
   panel.innerHTML = `<div style="overflow:auto;flex:1" id="scripts-dock-content">正在加载脚本管理器...</div>`;
   document.getElementById('interact-panels').appendChild(panel);
   activateTab(id);
-  openScriptsPanel().then(() => {
-    const modalBody = document.getElementById('modal-body');
-    const dockContent = document.getElementById('scripts-dock-content');
-    if (modalBody && dockContent) {
-      dockContent.innerHTML = modalBody.innerHTML;
-      hideModal();
-    }
-  });
+  await openScriptsPanel(document.getElementById('scripts-dock-content'));
 }
-document.getElementById('modal-overlay').addEventListener('click', e => { if (e.target.id === 'modal-overlay') hideModal(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') hideModal(); });
 
 // ── Operator notes (per agent, in-memory) ───────────────────────────────────
 document.getElementById('notes-btn').addEventListener('click', openNotes);
@@ -4364,12 +4378,11 @@ function renderPalette() {
 }
 document.getElementById('palette-input').addEventListener('input', function(){ buildPalette(this.value); });
 document.getElementById('palette-input').addEventListener('keydown', e => {
-  if (e.key === 'Escape') return closePalette();
   if (e.key === 'ArrowDown') { paletteSel = Math.min(paletteSel+1, paletteItems.length-1); renderPalette(); e.preventDefault(); }
   if (e.key === 'ArrowUp')   { paletteSel = Math.max(paletteSel-1, 0); renderPalette(); e.preventDefault(); }
   if (e.key === 'Enter' && paletteItems[paletteSel]) { paletteItems[paletteSel].action(); closePalette(); }
 });
-document.getElementById('palette-overlay').addEventListener('click', e => { if (e.target.id === 'palette-overlay') closePalette(); });
+document.getElementById('palette-close').addEventListener('click', closePalette);
 function switchView(v) { openToolbarView(v); }
 
 // ── Resize handle ──────────────────────────────────────────────────────────
@@ -4589,9 +4602,8 @@ async function openFileBrowser(sessionID) {
     </div>`;
     document.body.appendChild(ov);
     const done = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
-    const onKey = event => { if (event.key === 'Escape' || event.key === 'Enter') done(); };
+    const onKey = () => {};
     ov.querySelector('[data-dialog-close]').addEventListener('click', done);
-    ov.addEventListener('click', event => { if (event.target === ov) done(); });
     document.addEventListener('keydown', onKey);
     ov.querySelector('[data-dialog-close]').focus();
   }
@@ -4607,8 +4619,8 @@ async function openFileBrowser(sessionID) {
         <label><span>程序路径</span><input type="text" value="${esc(file.path).replace(/"/g, '&quot;')}" readonly/></label>
         <label><span>命令行参数</span><input name="arguments" type="text" autocomplete="off" placeholder='例如：--name "hello world" /silent'/><small>使用空格分隔参数；带空格的参数请放在引号内。</small></label>
         <div class="execute-file-options">
-          <label class="check-label"><input name="background" type="checkbox"/> 后台运行</label>
-          ${isWindows ? '<label class="check-label"><input name="hideWindow" type="checkbox"/> 隐藏窗口</label>' : ''}
+          <label class="check-label"><input name="background" type="checkbox" checked/> 后台运行</label>
+          ${isWindows ? '<label class="check-label"><input name="hideWindow" type="checkbox" checked/> 隐藏窗口</label>' : ''}
         </div>
         <div class="execute-file-note">后台运行只确认进程已创建，不会持续收集程序输出。</div>
         <div class="execute-file-error" role="alert"></div>
@@ -4626,9 +4638,8 @@ async function openFileBrowser(sessionID) {
       ov.remove();
       document.removeEventListener('keydown', onKey);
     };
-    const onKey = event => { if (event.key === 'Escape') close(); };
+    const onKey = () => {};
     ov.querySelector('[data-dialog-cancel]').addEventListener('click', close);
-    ov.addEventListener('click', event => { if (event.target === ov) close(); });
     document.addEventListener('keydown', onKey);
     form.addEventListener('submit', async event => {
       event.preventDefault();
@@ -4653,6 +4664,12 @@ async function openFileBrowser(sessionID) {
       running = false;
       if (result?.error) {
         const info = rpcError(result.error, '运行程序失败');
+        if (info.code === 'timeout') {
+          ov.remove();
+          document.removeEventListener('keydown', onKey);
+          toast('info', '运行请求已发送，但目标未在超时前返回状态；程序可能已经启动，请在进程浏览器中确认。', 7000);
+          return;
+        }
         errorBox.textContent = info.detail ? `${info.message}：${info.detail}` : info.message;
         runButton.disabled = false;
         runButton.textContent = '运行';
@@ -4694,8 +4711,7 @@ async function openFileBrowser(sessionID) {
       ov.remove();
       document.removeEventListener('keydown', onKey);
     };
-    const onKey = event => { if (event.key === 'Escape') close(); };
-    ov.addEventListener('click', event => { if (event.target === ov) close(); });
+    const onKey = () => {};
     document.addEventListener('keydown', onKey);
 
     const draw = (state = 'ready', message = '') => {

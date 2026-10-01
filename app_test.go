@@ -1,9 +1,12 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"context"
+	"io"
+	"reflect"
 	"testing"
 	"time"
 
@@ -196,6 +199,66 @@ func TestDownloadDefaultName(t *testing.T) {
 	}
 	if got := downloadDefaultName(`/tmp/report.txt`, &sliverpb.Download{}); got != "report.txt" {
 		t.Fatalf("file name = %q, want report.txt", got)
+	}
+}
+
+func TestCommandExecuteWindowsRequestHidesConsoleWindow(t *testing.T) {
+	request := commandExecuteWindowsRequest("session-test", "whoami")
+	if request.Path != "cmd.exe" || len(request.Args) != 2 || request.Args[0] != "/c" || request.Args[1] != "whoami" {
+		t.Fatalf("unexpected command request: %#v", request)
+	}
+	if !request.Output || !request.HideWindow || request.Request == nil || request.Request.SessionID != "session-test" {
+		t.Fatalf("Windows command request does not hide its console: %#v", request)
+	}
+}
+
+func TestNormalizeDirectoryArchiveUsesSelectedDirectoryAsRoot(t *testing.T) {
+	var source bytes.Buffer
+	tw := tar.NewWriter(&source)
+	entries := []struct{ name, content string }{
+		{`C:/Users/CHEN/Desktop/sqli-payload/`, ""},
+		{`C:/Users/CHEN/Desktop/sqli-payload/nested/a.txt`, "payload"},
+	}
+	for _, entry := range entries {
+		name, content := entry.name, entry.content
+		header := &tar.Header{Name: name, Mode: 0o600, Size: int64(len(content))}
+		if content == "" {
+			header.Typeflag = tar.TypeDir
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	normalized, err := normalizeDirectoryArchive(source.Bytes(), `C:\Users\CHEN\Desktop\sqli-payload`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(normalized))
+	if err != nil {
+		t.Fatalf("normalized archive is not gzip: %v", err)
+	}
+	tr := tar.NewReader(gz)
+	var names []string
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, header.Name)
+	}
+	want := []string{"sqli-payload", "sqli-payload/nested/a.txt"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("normalized archive names = %#v, want %#v", names, want)
 	}
 }
 

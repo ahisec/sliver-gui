@@ -347,7 +347,7 @@ input::placeholder{color:var(--muted);}
 /* Command palette */
 .palette-overlay{position:fixed;inset:0;z-index:9998;background:rgba(4,5,9,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:14vh;}
 .palette{width:560px;max-width:90vw;background:var(--panel-elev);border:1px solid var(--border-hi);border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.65);overflow:hidden;}
-.palette-input{width:100%;border:none;border-bottom:1px solid var(--border);border-radius:0;background:var(--panel);color:var(--text);padding:15px 18px;font-size:14px;outline:none;}
+.palette-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;border-bottom:1px solid var(--border);background:var(--panel)}.palette-input{width:100%;border:none;border-radius:0;background:transparent;color:var(--text);padding:15px 18px;font-size:14px;outline:none}.palette-head .modal-close{margin-right:8px}
 .palette-results{max-height:52vh;overflow-y:auto;}
 .palette-item{padding:11px 18px;font-size:13px;cursor:pointer;border-left:2px solid transparent;}
 .palette-item:hover{background:var(--panel-hi);}
@@ -408,7 +408,7 @@ input::placeholder{color:var(--muted);}
 @media (max-width:560px){.agent-overview{grid-template-columns:1fr}.network-interface{grid-template-columns:1fr}.ctx-menu{min-width:200px}}
 
 /* ── Script Manager Panel ──────────────────────────────────────────────────── */
-.scripts-panel { padding: 8px; display: flex; flex-direction: column; gap: 14px; height: 100%; box-sizing: border-border-box; }
+.scripts-panel { padding: 8px; display: flex; flex-direction: column; gap: 14px; height: 100%; box-sizing: border-box; }
 .scr-top-bar { display: flex; gap: 12px; align-items: center; background: var(--panel-alt); padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; }
 .scr-main-layout { display: grid; grid-template-columns: minmax(360px, 1.2fr) minmax(320px, 1fr); gap: 16px; flex: 1; min-height: 0; }
 .scr-left-pane { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; padding-right: 4px; }
