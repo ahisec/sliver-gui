@@ -4,6 +4,10 @@ let lastConfigPath = null, reconnectTimer = null, reconnecting = false;
 let teamserverLabel = 'teamserver';
 let allSessions = [], allBeacons = [];
 let agentListFilter = 'sessions';
+let agentRefreshInFlight = false;
+const internalIPMap = {};
+const internalIPPending = new Set();
+const internalIPRetryAt = {};
 let pivotTree = [];                  // pivot topology from GetPivotGraph RPC
 // Graph interaction state (persists across refreshes).
 const graphPos = {};                 // agent id -> {x,y} in graph coords
@@ -307,7 +311,7 @@ async function enterApp(info) {
   loadState();
   const ver = await App().GetVersion().catch(() => null);
   if (ver) document.getElementById('server-version').textContent = `v${ver.major}.${ver.minor}.${ver.patch}`;
-  await refreshAgents();
+  await refreshAgents(true);
   agentNotificationState.reset(allSessions, allBeacons);
   wireEventStream();
   pinServerConsole();     // Server console docked by default
@@ -329,6 +333,9 @@ document.getElementById('disconnect-btn').addEventListener('click', async () => 
   for (const k in openTabs) delete openTabs[k];
   for (const k in notesMap) delete notesMap[k];
   for (const k in integrityMap) delete integrityMap[k];
+  for (const k in internalIPMap) delete internalIPMap[k];
+  for (const k in internalIPRetryAt) delete internalIPRetryAt[k];
+  internalIPPending.clear();
   // Clear transient graph state so jump lineage / drags don't leak into the next
   // engagement (persisted per-teamserver graphPos is kept).
   for (const k in jumpParentMap) delete jumpParentMap[k];
@@ -348,10 +355,7 @@ function wireEventStream() {
   window.runtime.EventsOn('sliver:disconnected', (reason) => onDisconnected(reason));
   window.runtime.EventsOn('sliver:event', async (ev) => {
     logEvent(ev);
-    if (ev.type && ev.type.includes('session')) refreshAgents();
-    if (ev.type && ev.type.includes('beacon')) refreshAgents();
-    if ((ev.type === 'session-connected' || ev.type === 'session-opened') && ev.session) await handleAgentOnline('session', ev.session);
-    if (ev.type === 'beacon-registered' && ev.beacon) await handleAgentOnline('beacon', ev.beacon);
+    if (ev.type && (ev.type.includes('session') || ev.type.includes('beacon'))) await refreshAgents();
   });
 }
 
@@ -359,13 +363,12 @@ async function handleAgentOnline(kind, agent) {
   if (!agentNotificationState.take(kind, agent)) return;
   const label = kind === 'beacon' ? 'Beacon' : 'Session';
   const event = { category:'agent', level:'info', title:`${label} 上线`, message:`${label} 已上线：${agent.hostname || '未知主机'}`, tag:`${kind}-online-${agent.id}` };
-  if (!NotificationRules.shouldNotify(event, notificationSettings)) return;
-  notifyOperational(event);
+  if (NotificationRules.shouldNotify(event, notificationSettings)) notifyOperational(event);
   if (kind === 'session' && agent.id && !integrityMap[agent.id]) {
     const privileges = await App().GetPrivs(agent.id).catch(() => null);
     if (privileges?.integrity) {
       integrityMap[agent.id] = privileges.integrity;
-      saveAgentState();
+      saveState();
       renderTable();
     }
   }
@@ -402,9 +405,22 @@ function renderEventsList() {
 }
 
 // ── Refresh all agents ─────────────────────────────────────────────────────
-async function refreshAgents() {
-  allSessions = await App().ListSessions().catch(() => []) || [];
-  allBeacons = await App().ListBeacons().catch(() => []) || [];
+async function refreshAgents(establishBaseline = false) {
+  if (agentRefreshInFlight) return;
+  agentRefreshInFlight = true;
+  let sessions, beacons, graph;
+  try {
+    [sessions, beacons, graph] = await Promise.all([
+      App().ListSessions().catch(() => null),
+      App().ListBeacons().catch(() => null),
+      App().GetPivotGraph().catch(() => null),
+    ]);
+  } finally {
+    agentRefreshInFlight = false;
+  }
+  if (sessions) allSessions = sessions;
+  if (beacons) allBeacons = beacons;
+  if (graph) pivotTree = graph;
   let integrityChanged = false;
   [...allSessions, ...allBeacons].forEach(agent => {
     const integrity = String(agent.integrity || '').trim();
@@ -413,13 +429,29 @@ async function refreshAgents() {
       integrityChanged = true;
     }
   });
-  if (integrityChanged) saveAgentState();
-  pivotTree = await App().GetPivotGraph().catch(() => []) || [];
+  if (integrityChanged) saveState();
+  allSessions.forEach(agent => loadInternalIP(agent));
+  if (establishBaseline) agentNotificationState.reset(allSessions, allBeacons);
+  else {
+    allSessions.forEach(agent => handleAgentOnline('session', agent));
+    allBeacons.forEach(agent => handleAgentOnline('beacon', agent));
+  }
   updateAgentCount();
   renderTable();
   refreshOpenAgentHeaders();
   if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
   refreshListenerHealth();
+}
+
+async function loadInternalIP(agent) {
+  if (!agent?.id || internalIPMap[agent.id] || internalIPPending.has(agent.id) || Date.now() < (internalIPRetryAt[agent.id] || 0)) return;
+  internalIPPending.add(agent.id);
+  const result = await App().GetAgentIPs(agent.id).catch(() => null);
+  internalIPPending.delete(agent.id);
+  internalIPMap[agent.id] = String(result?.internalIP || '').trim();
+  if (!internalIPMap[agent.id]) internalIPRetryAt[agent.id] = Date.now() + 60000;
+  else delete internalIPRetryAt[agent.id];
+  renderTable();
 }
 function visibleAgents() {
   if (agentListFilter === 'beacons') return allBeacons.map(obj => ({ kind:'beacon', obj }));
@@ -479,8 +511,10 @@ function renderTable() {
     if (isPrivileged(o) && !o.isDead) tr.classList.add('row-priv');
     const typeCls = kind === 'session' ? 'type-session' : 'type-beacon';
     const remoteIP = RemoteAddress.sourceIP(o.remoteAddress);
+    const internalIP = internalIPMap[o.id] || (kind === 'beacon' ? '需实时会话' : '读取中');
+    const sourceAndTransport = `${remoteIP} · ${o.transport || '-'}`;
     const process = o.processName ? `<small class="agent-process-name" title="${esc(o.processName)}">${esc(o.processName)}</small>` : '';
-    tr.innerHTML = `<td class="${typeCls}">${kind === 'session' ? '会话' : '信标'}</td><td>${esc(o.name||o.id.slice(0,8))}</td><td>${esc(o.hostname)}</td>${userCell(o)}<td title="${esc(o.remoteAddress || 'Teamserver 未提供连接来源')}">${esc(remoteIP)}</td><td>${esc(o.os)}/${esc(o.arch)}</td><td><span>${o.pid}</span>${process}</td><td>${esc(o.transport)}</td><td>${esc(o.lastCheckin)}</td><td class="${o.isDead?'status-dead':'status-alive'}">${o.isDead?'离线':'在线'}</td>`;
+    tr.innerHTML = `<td class="${typeCls}">${kind === 'session' ? '会话' : '信标'}</td><td>${esc(o.name||o.id.slice(0,8))}</td><td>${esc(o.hostname)}<small class="agent-process-name" title="目标内网 IP">${esc(internalIP)}</small></td>${userCell(o)}<td title="${esc(o.remoteAddress || 'Teamserver 未提供连接来源')}">${esc(sourceAndTransport)}</td><td>${esc(o.os)}/${esc(o.arch)}</td><td><span>${o.pid}</span>${process}</td><td>${esc(o.lastCheckin)}</td><td class="${o.isDead?'status-dead':'status-alive'}">${o.isDead?'离线':'在线'}</td>`;
     tr.addEventListener('dblclick', () => openInteract(kind, o));
     tr.addEventListener('contextmenu', e => showCtx(e, kind, o));
     body.appendChild(tr);
@@ -488,7 +522,7 @@ function renderTable() {
   const agents = visibleAgents();
   agents.forEach(agent => row(agent.obj, agent.kind));
   if (!agents.length) {
-    body.innerHTML = `<tr><td colspan="10" class="empty-state">暂无${agentListFilter === 'beacons' ? '信标' : '会话'}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" class="empty-state">暂无${agentListFilter === 'beacons' ? '信标' : '会话'}</td></tr>`;
   }
 }
 
@@ -2288,7 +2322,7 @@ async function runFileTransfer(direction, sessionID, remotePath, options = {}) {
   });
   taskActions.set(task.id, { cancel: () => App().CancelTransfer(transferID) });
   const call = direction === 'download'
-    ? App().DownloadFileTracked(transferID, sessionID, remotePath)
+    ? App().DownloadPathTracked(transferID, sessionID, remotePath, Boolean(options.isDirectory))
     : options.toDirectory
       ? App().UploadFileToDirectoryTracked(transferID, sessionID, remotePath)
       : App().UploadFileTracked(transferID, sessionID, remotePath);
@@ -4884,7 +4918,7 @@ async function openFileBrowser(sessionID) {
       if (action === 'timestamps') return showFilePropertiesDialog(file, { editTimestamps: true });
       if (action === 'execute' && !file.isDir) return showFileExecuteDialog(file);
       if (action === 'download') {
-        const result = await runFileTransfer('download', sessionID, file.path);
+        const result = await runFileTransfer('download', sessionID, file.path, { isDirectory: file.isDir });
         if (result?.error) toastRpcError(result.error, file.isDir ? '下载文件夹失败' : '下载文件失败');
         else if (result) toast('ok', `${file.isDir ? '文件夹归档' : '文件'}已保存到 ${result.path}`);
         return;

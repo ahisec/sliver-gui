@@ -1029,30 +1029,40 @@ type TransferResult struct {
 	Error string `json:"error,omitempty"`
 }
 
+const directoryDownloadTimeout = 10 * time.Minute
+
 func (a *App) DownloadFile(sessionID, remotePath string) TransferResult {
-	return a.downloadFile(a.ctx, sessionID, remotePath)
+	return a.downloadFile(a.ctx, sessionID, remotePath, false)
 }
 
 // DownloadFileTracked runs a download under a cancellable client transfer ID.
 func (a *App) DownloadFileTracked(transferID, sessionID, remotePath string) TransferResult {
+	return a.DownloadPathTracked(transferID, sessionID, remotePath, false)
+}
+
+// DownloadPathTracked downloads a file or recursively archives a directory.
+func (a *App) DownloadPathTracked(transferID, sessionID, remotePath string, isDirectory bool) TransferResult {
 	ctx, done, err := a.beginTransfer(transferID)
 	if err != nil {
 		return TransferResult{Error: err.Error()}
 	}
 	defer done()
-	return a.downloadFile(ctx, sessionID, remotePath)
+	return a.downloadFile(ctx, sessionID, remotePath, isDirectory)
 }
 
-func (a *App) downloadFile(ctx context.Context, sessionID, remotePath string) TransferResult {
+func (a *App) downloadFile(ctx context.Context, sessionID, remotePath string, isDirectory bool) TransferResult {
 	client, err := a.requireClient()
 	if err != nil {
 		return TransferResult{Error: err.Error()}
 	}
-	resp, err := client.RPC.Download(ctx, &sliverpb.DownloadReq{
-		Path:             remotePath,
-		RestrictedToFile: false,
-		Request:          &commonpb.Request{SessionID: sessionID},
-	})
+	requestCtx := ctx
+	downloadRequest := downloadPathRequest(sessionID, remotePath, isDirectory)
+	if isDirectory {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(ctx, directoryDownloadTimeout)
+		defer cancel()
+	}
+	resp, err := client.RPC.Download(requestCtx, downloadRequest)
 	if err != nil {
 		return TransferResult{Error: err.Error()}
 	}
@@ -1078,6 +1088,19 @@ func (a *App) downloadFile(ctx context.Context, sessionID, remotePath string) Tr
 		return TransferResult{Error: err.Error()}
 	}
 	return TransferResult{Path: savePath, Bytes: int64(len(data))}
+}
+
+func downloadPathRequest(sessionID, remotePath string, isDirectory bool) *sliverpb.DownloadReq {
+	request := &commonpb.Request{SessionID: sessionID}
+	if isDirectory {
+		request.Timeout = int64(directoryDownloadTimeout)
+	}
+	return &sliverpb.DownloadReq{
+		Path:             remotePath,
+		Recurse:          isDirectory,
+		RestrictedToFile: false,
+		Request:          request,
+	}
 }
 
 func downloadDefaultName(remotePath string, resp *sliverpb.Download) string {

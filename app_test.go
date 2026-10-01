@@ -211,6 +211,20 @@ func TestDownloadDefaultName(t *testing.T) {
 	}
 }
 
+func TestDownloadPathRequestEnablesRecursiveDirectoryArchive(t *testing.T) {
+	directory := downloadPathRequest("session-test", `C:\Users\CHEN\Desktop\sqli-payload`, true)
+	if !directory.Recurse || directory.RestrictedToFile || directory.Request == nil {
+		t.Fatalf("unexpected directory download request: %#v", directory)
+	}
+	if directory.Request.SessionID != "session-test" || directory.Request.Timeout != int64(directoryDownloadTimeout) {
+		t.Fatalf("directory download timeout or target missing: %#v", directory.Request)
+	}
+	file := downloadPathRequest("session-test", `C:\Temp\report.txt`, false)
+	if file.Recurse || file.Request == nil || file.Request.Timeout != 0 {
+		t.Fatalf("file download should not recurse or override timeout: %#v", file)
+	}
+}
+
 func TestCommandExecuteWindowsRequestHidesConsoleWindow(t *testing.T) {
 	request := commandExecuteWindowsRequest("session-test", "whoami")
 	if request.Path != "cmd.exe" || len(request.Args) != 2 || request.Args[0] != "/c" || request.Args[1] != "whoami" {
