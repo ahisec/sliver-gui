@@ -20,6 +20,9 @@ const eventLog = [];
 const EVENT_MAX = 500;
 const notesMap = {};          // agent id -> operator notes (in-memory, cleared on disconnect)
 const integrityMap = {};      // agent id -> real integrity level from getprivs (System/High/Medium/Low)
+const integrityProbePending = new Set();
+const integrityProbeRetry = {};
+const beaconIntegrityTasks = {};
 let activeInteractId = null;  // currently focused agent tab
 const taskStore = TaskStore.createTaskStore({ limit: 100 });
 let taskCenterFilter = 'all';
@@ -333,6 +336,9 @@ document.getElementById('disconnect-btn').addEventListener('click', async () => 
   for (const k in openTabs) delete openTabs[k];
   for (const k in notesMap) delete notesMap[k];
   for (const k in integrityMap) delete integrityMap[k];
+  for (const k in integrityProbeRetry) delete integrityProbeRetry[k];
+  for (const k in beaconIntegrityTasks) delete beaconIntegrityTasks[k];
+  integrityProbePending.clear();
   for (const k in internalIPMap) delete internalIPMap[k];
   for (const k in internalIPRetryAt) delete internalIPRetryAt[k];
   internalIPPending.clear();
@@ -364,14 +370,6 @@ async function handleAgentOnline(kind, agent) {
   const label = kind === 'beacon' ? 'Beacon' : 'Session';
   const event = { category:'agent', level:'info', title:`${label} 上线`, message:`${label} 已上线：${agent.hostname || '未知主机'}`, tag:`${kind}-online-${agent.id}` };
   if (NotificationRules.shouldNotify(event, notificationSettings)) notifyOperational(event);
-  if (kind === 'session' && agent.id && !integrityMap[agent.id]) {
-    const privileges = await App().GetPrivs(agent.id).catch(() => null);
-    if (privileges?.integrity) {
-      integrityMap[agent.id] = privileges.integrity;
-      saveState();
-      renderTable();
-    }
-  }
   const error = await App().NotifyDingTalkAgentOnline({
     kind,
     ip: RemoteAddress.sourceIP(agent.remoteAddress),
@@ -430,6 +428,8 @@ async function refreshAgents(establishBaseline = false) {
     }
   });
   if (integrityChanged) saveState();
+  allSessions.forEach(agent => probeAgentIntegrity('session', agent));
+  allBeacons.forEach(agent => probeAgentIntegrity('beacon', agent));
   allSessions.forEach(agent => loadInternalIP(agent));
   if (establishBaseline) agentNotificationState.reset(allSessions, allBeacons);
   else {
@@ -441,6 +441,53 @@ async function refreshAgents(establishBaseline = false) {
   refreshOpenAgentHeaders();
   if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
   refreshListenerHealth();
+}
+
+function scheduleIntegrityRetry(id) {
+  const previous = integrityProbeRetry[id]?.delay || 7500;
+  const delay = Math.min(previous * 2, 60000);
+  integrityProbeRetry[id] = { at: Date.now() + delay, delay };
+}
+
+function applyProbedIntegrity(agent, integrity) {
+  integrity = String(integrity || '').trim();
+  if (!integrity) return false;
+  integrityMap[agent.id] = integrity;
+  agent.integrity = integrity;
+  delete integrityProbeRetry[agent.id];
+  delete beaconIntegrityTasks[agent.id];
+  saveState();
+  renderTable();
+  if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
+  return true;
+}
+
+async function probeAgentIntegrity(kind, agent) {
+  if (!agent?.id || agent.isDead || !String(agent.os || '').toLowerCase().includes('windows')) return;
+  if (String(agent.integrity || integrityMap[agent.id] || '').trim()) return;
+  if (integrityProbePending.has(agent.id) || Date.now() < (integrityProbeRetry[agent.id]?.at || 0)) return;
+  integrityProbePending.add(agent.id);
+  try {
+    if (kind === 'session') {
+      const result = await App().GetPrivs(agent.id).catch(() => null);
+      if (!applyProbedIntegrity(agent, result?.integrity)) scheduleIntegrityRetry(agent.id);
+      return;
+    }
+    const taskID = beaconIntegrityTasks[agent.id];
+    const result = taskID
+      ? await App().PollBeaconIntegrityProbe(agent.id, taskID).catch(() => null)
+      : await App().StartBeaconIntegrityProbe(agent.id).catch(() => null);
+    if (applyProbedIntegrity(agent, result?.integrity)) return;
+    if (result?.status === 'pending' && result.taskId) {
+      beaconIntegrityTasks[agent.id] = result.taskId;
+      integrityProbeRetry[agent.id] = { at: Date.now() + 5000, delay: 5000 };
+    } else {
+      delete beaconIntegrityTasks[agent.id];
+      scheduleIntegrityRetry(agent.id);
+    }
+  } finally {
+    integrityProbePending.delete(agent.id);
+  }
 }
 
 async function loadInternalIP(agent) {

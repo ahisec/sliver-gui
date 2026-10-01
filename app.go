@@ -963,6 +963,13 @@ type PrivsResult struct {
 	Privs       []PrivEntry `json:"privs"`
 }
 
+type IntegrityProbeResult struct {
+	TaskID    string `json:"taskId,omitempty"`
+	Status    string `json:"status"`
+	Integrity string `json:"integrity,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 func (a *App) GetPrivs(sessionID string) (PrivsResult, error) {
 	client, err := a.requireClient()
 	if err != nil {
@@ -979,6 +986,67 @@ func (a *App) GetPrivs(sessionID string) (PrivsResult, error) {
 		out.Privs = append(out.Privs, PrivEntry{Name: p.Name, Description: p.Description, Enabled: p.Enabled})
 	}
 	return out, nil
+}
+
+// StartBeaconIntegrityProbe queues getprivs for a Windows Beacon without
+// blocking the UI until its next check-in.
+func (a *App) StartBeaconIntegrityProbe(beaconID string) IntegrityProbeResult {
+	client, err := a.requireClient()
+	if err != nil {
+		return IntegrityProbeResult{Status: "error", Error: err.Error()}
+	}
+	resp, err := client.RPC.GetPrivs(a.ctx, &sliverpb.GetPrivsReq{
+		Request: &commonpb.Request{BeaconID: beaconID, Async: true},
+	})
+	if err != nil {
+		return IntegrityProbeResult{Status: "error", Error: err.Error()}
+	}
+	if resp.Response != nil && resp.Response.TaskID != "" {
+		return IntegrityProbeResult{TaskID: resp.Response.TaskID, Status: "pending"}
+	}
+	if resp.ProcessIntegrity != "" {
+		return IntegrityProbeResult{Status: "completed", Integrity: resp.ProcessIntegrity}
+	}
+	return IntegrityProbeResult{Status: "error", Error: "Teamserver 未返回 Beacon 完整性任务 ID"}
+}
+
+// PollBeaconIntegrityProbe resolves a queued getprivs task and mirrors the
+// official client by writing the result back to the Teamserver Beacon record.
+func (a *App) PollBeaconIntegrityProbe(beaconID, taskID string) IntegrityProbeResult {
+	client, err := a.requireClient()
+	if err != nil {
+		return IntegrityProbeResult{TaskID: taskID, Status: "error", Error: err.Error()}
+	}
+	task, err := client.RPC.GetBeaconTaskContent(a.ctx, &clientpb.BeaconTask{ID: taskID})
+	if err != nil {
+		return IntegrityProbeResult{TaskID: taskID, Status: "pending"}
+	}
+	if task.State != "completed" {
+		if task.State == "failed" || task.State == "canceled" {
+			return IntegrityProbeResult{TaskID: taskID, Status: "error", Error: "Beacon 完整性任务" + task.State}
+		}
+		return IntegrityProbeResult{TaskID: taskID, Status: "pending"}
+	}
+	integrity, err := decodeBeaconIntegrity(task.Response)
+	if err != nil {
+		return IntegrityProbeResult{TaskID: taskID, Status: "error", Error: err.Error()}
+	}
+	if _, err := client.RPC.UpdateBeaconIntegrityInformation(a.ctx, &clientpb.BeaconIntegrity{BeaconID: beaconID, Integrity: integrity}); err != nil {
+		return IntegrityProbeResult{TaskID: taskID, Status: "error", Error: "无法保存 Beacon 完整性级别: " + err.Error()}
+	}
+	return IntegrityProbeResult{TaskID: taskID, Status: "completed", Integrity: integrity}
+}
+
+func decodeBeaconIntegrity(data []byte) (string, error) {
+	var privileges sliverpb.GetPrivs
+	if err := proto.Unmarshal(data, &privileges); err != nil {
+		return "", errors.New("无法解析 Beacon 完整性结果: " + err.Error())
+	}
+	integrity := strings.TrimSpace(privileges.ProcessIntegrity)
+	if integrity == "" {
+		return "", errors.New("Beacon 未返回完整性级别")
+	}
+	return integrity, nil
 }
 
 // ProcessDump dumps a process's memory and saves it via a native dialog.

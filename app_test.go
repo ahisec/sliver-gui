@@ -235,6 +235,19 @@ func TestCommandExecuteWindowsRequestHidesConsoleWindow(t *testing.T) {
 	}
 }
 
+func TestDecodeBeaconIntegrity(t *testing.T) {
+	data, err := proto.Marshal(&sliverpb.GetPrivs{ProcessIntegrity: "High"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := decodeBeaconIntegrity(data); err != nil || got != "High" {
+		t.Fatalf("decodeBeaconIntegrity = (%q, %v), want High", got, err)
+	}
+	if _, err := decodeBeaconIntegrity([]byte("invalid")); err == nil {
+		t.Fatal("invalid Beacon integrity response was accepted")
+	}
+}
+
 func TestNormalizeDirectoryArchiveUsesSelectedDirectoryAsRoot(t *testing.T) {
 	var source bytes.Buffer
 	tw := tar.NewWriter(&source)
