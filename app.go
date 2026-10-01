@@ -1567,6 +1567,51 @@ func (a *App) ReconfigureBeacon(beaconID string, interval, jitter int64) error {
 	return err
 }
 
+const maxSessionReconnectSeconds int64 = 7 * 24 * 60 * 60
+
+func sessionReconnectRequest(sessionID string, intervalSeconds int64) (*sliverpb.ReconfigureReq, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, errors.New("session ID is required")
+	}
+	if intervalSeconds < 1 || intervalSeconds > maxSessionReconnectSeconds {
+		return nil, fmt.Errorf("reconnect interval must be between 1 and %d seconds", maxSessionReconnectSeconds)
+	}
+	return &sliverpb.ReconfigureReq{
+		ReconnectInterval: intervalSeconds * int64(time.Second),
+		Request:           &commonpb.Request{SessionID: sessionID},
+	}, nil
+}
+
+// ReconfigureSessionReconnect changes how long a Session waits before
+// reconnecting after its current transport connection is lost.
+func (a *App) ReconfigureSessionReconnect(sessionID string, intervalSeconds int64) error {
+	req, err := sessionReconnectRequest(sessionID, intervalSeconds)
+	if err != nil {
+		return err
+	}
+	client, err := a.requireClient()
+	if err != nil {
+		return err
+	}
+	resp, err := client.RPC.Reconfigure(a.ctx, req)
+	if err != nil {
+		a.logDestructive("session-reconnect-interval", sessionID, err)
+		return err
+	}
+	if resp == nil {
+		err = errors.New("teamserver returned an empty reconfigure response")
+		a.logDestructive("session-reconnect-interval", sessionID, err)
+		return err
+	}
+	if resp.Response != nil && resp.Response.Err != "" {
+		err = errors.New(resp.Response.Err)
+		a.logDestructive("session-reconnect-interval", sessionID, err)
+		return err
+	}
+	a.logDestructive("session-reconnect-interval", sessionID, nil)
+	return nil
+}
+
 // InteractiveBeacon asks a beacon to open an interactive session on next check-in.
 func (a *App) InteractiveBeacon(beaconID string) error {
 	client, err := a.requireClient()

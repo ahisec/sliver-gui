@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bishopfox/sliver/protobuf/commonpb"
 	"github.com/bishopfox/sliver/protobuf/sliverpb"
@@ -123,6 +124,39 @@ func TestChtimesRequestRejectsMissingTargetAndUnsupportedRange(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, err := chtimesRequest(tt.sessionID, tt.path, tt.atime, tt.mtime); err == nil {
 				t.Fatal("chtimesRequest accepted invalid input")
+			}
+		})
+	}
+}
+
+func TestSessionReconnectRequestTargetsSessionAndConvertsSeconds(t *testing.T) {
+	request, err := sessionReconnectRequest("session-test", 90)
+	if err != nil {
+		t.Fatalf("sessionReconnectRequest returned an unexpected error: %v", err)
+	}
+	if request.ReconnectInterval != int64(90*time.Second) {
+		t.Fatalf("reconnect interval was not converted to nanoseconds: %d", request.ReconnectInterval)
+	}
+	if request.Request == nil || request.Request.SessionID != "session-test" || request.Request.BeaconID != "" {
+		t.Fatalf("request was not targeted to the Session: %#v", request.Request)
+	}
+}
+
+func TestSessionReconnectRequestRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name      string
+		sessionID string
+		seconds   int64
+	}{
+		{name: "missing session", seconds: 60},
+		{name: "zero interval", sessionID: "session-test"},
+		{name: "negative interval", sessionID: "session-test", seconds: -1},
+		{name: "interval too large", sessionID: "session-test", seconds: maxSessionReconnectSeconds + 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := sessionReconnectRequest(tt.sessionID, tt.seconds); err == nil {
+				t.Fatal("sessionReconnectRequest accepted invalid input")
 			}
 		})
 	}

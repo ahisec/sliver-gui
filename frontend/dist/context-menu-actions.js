@@ -25,5 +25,20 @@
     ];
   }
 
-  return { fileActions, processActions };
+  function sessionHostActions(isWindows) {
+    const actions = [
+      { action: 'spawn', label: '生成新会话' },
+      { action: 'sleep', label: 'Sleep / 重连间隔' },
+    ];
+    if (isWindows) actions.push({ action: 'screenshot', label: '截取屏幕' });
+    actions.push(
+      { action: 'network', label: '网络信息' },
+      { action: 'files', label: '文件浏览器' },
+      { action: 'processes', label: '进程浏览器' },
+    );
+    if (isWindows) actions.push({ action: 'integrity', label: '检查完整性级别' });
+    return actions;
+  }
+
+  return { fileActions, processActions, sessionHostActions };
 });

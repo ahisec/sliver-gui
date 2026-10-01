@@ -833,10 +833,11 @@ function showCtx(e, kind, obj) {
   e.preventDefault(); activeCtxAgent = { kind, obj };
   const session = kind === 'session', windows = (obj.os || '').toLowerCase().includes('windows');
   const item = (action, label, options = {}) => `<button class="ctx-item${options.danger ? ' danger' : ''}" data-ctx-action="${action}" ${options.disabled ? 'disabled' : ''}>${label}</button>`;
+  const sessionActions = session ? ContextMenuActions.sessionHostActions(windows).map(entry => item(entry.action, entry.label)).join('') : '<div class="ctx-hint">实时浏览和主机操作需使用 Session</div>';
   ctxMenu.innerHTML = `<div class="ctx-agent"><strong>${esc(obj.hostname || obj.name || obj.id.slice(0,8))}</strong><span>${session ? '实时会话' : '异步信标'}</span></div>
     ${item('overview','主机概览')}${session ? '' : item('interact','打开信标工作区')}
     <div class="ctx-divider"></div>
-    ${session ? `${item('spawn','生成新会话')}${windows ? item('screenshot','截取屏幕') : ''}${item('network','网络信息')}${item('files','文件浏览器')}${item('processes','进程浏览器')}${windows ? item('integrity','检查完整性级别') : ''}` : '<div class="ctx-hint">实时浏览和主机操作需使用 Session</div>'}
+    ${sessionActions}
     <div class="ctx-divider"></div>
     ${item('copy-summary','复制目标摘要')}
     ${session ? item('rename','重命名') : ''}<div class="ctx-divider"></div>${item('kill','终止', {danger:true})}`;
@@ -858,6 +859,7 @@ ctxMenu.addEventListener('click', async event => {
   if (action === 'upload') return uploadFromContext(obj);
   if (action === 'processes') return openProcessBrowser(obj.id);
   if (action === 'spawn') return openSpawnDialog(obj);
+  if (action === 'sleep') return openSessionSleepDialog(obj);
   if (action === 'infrastructure') { await openInfrastructurePanel(); const select = document.getElementById('infra-session-filter'); if (select) { select.value = obj.id; select.dispatchEvent(new Event('change')); } return; }
   if (action === 'automation') { await openScriptsPanel(); const select = document.getElementById('scr-session'); if (select) select.value = obj.id; return; }
   if (action.startsWith('copy-')) return copyAgentValue(action, kind, obj);
@@ -939,6 +941,68 @@ async function openMigrateDialog(sessionID, initialPID = '') {
   if (!profile) return;
   if (!(await uiConfirm(`确认将当前会话迁移到 PID ${pid}？此操作会使用配置档案“${esc(profile)}”构建载荷。`, {title:'确认进程迁移',okLabel:'迁移',danger:true}))) return;
   await App().Migrate(sessionID, Number(pid), profile).then(() => toast('ok', `已提交迁移到 PID ${pid}`)).catch(error => toastRpcError(error, '进程迁移失败'));
+}
+
+function openSessionSleepDialog(obj) {
+  const ov = document.createElement('div');
+  ov.className = 'ui-dialog-overlay';
+  ov.innerHTML = `<div class="ui-dialog">
+    <div class="ui-dialog-title">Sleep / 重连间隔</div>
+    <form class="execute-file-form">
+      <label><span>目标主机</span><input type="text" value="${esc(obj.hostname || obj.name || obj.id)}" readonly/></label>
+      <label><span>重连间隔（秒）</span><input name="seconds" type="number" min="1" max="${SessionReconnect.MAX_SECONDS}" step="1" value="60" required/><small>允许范围：1 秒到 7 天。</small></label>
+      <div class="execute-file-note">实时 Session 使用持续连接。此设置只控制连接断开后的等待时间，不会暂停或静默当前在线连接。</div>
+      <div class="execute-file-error" role="alert"></div>
+      <div class="ui-dialog-actions"><button type="button" class="btn small" data-dialog-cancel>取消</button><button type="submit" class="btn small accent" data-dialog-apply>应用</button></div>
+    </form>
+  </div>`;
+  document.body.appendChild(ov);
+  const form = ov.querySelector('form');
+  const input = form.elements.seconds;
+  const errorBox = ov.querySelector('.execute-file-error');
+  const applyButton = ov.querySelector('[data-dialog-apply]');
+  let applying = false;
+  const close = () => {
+    if (applying) return;
+    ov.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = event => { if (event.key === 'Escape') close(); };
+  ov.querySelector('[data-dialog-cancel]').addEventListener('click', close);
+  ov.addEventListener('click', event => { if (event.target === ov) close(); });
+  document.addEventListener('keydown', onKey);
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (applying) return;
+    const parsed = SessionReconnect.parseSeconds(input.value);
+    if (parsed.error) {
+      errorBox.textContent = parsed.error;
+      input.focus();
+      return;
+    }
+    errorBox.textContent = '';
+    const confirmed = await uiConfirm(
+      `确定将“${obj.hostname || obj.name || obj.id}”的断线重连间隔设置为 ${parsed.seconds} 秒吗？\n此操作不会暂停当前在线连接。`,
+      { title: '确认 Sleep / 重连间隔', okLabel: '应用' },
+    );
+    if (!confirmed || !document.body.contains(ov)) return;
+    applying = true;
+    applyButton.disabled = true;
+    applyButton.textContent = '正在应用...';
+    const error = await App().ReconfigureSessionReconnect(obj.id, parsed.seconds).then(() => null).catch(value => value);
+    applying = false;
+    if (error) {
+      const info = rpcError(error, '设置重连间隔失败');
+      errorBox.textContent = info.detail ? `${info.message}：${info.detail}` : info.message;
+      applyButton.disabled = false;
+      applyButton.textContent = '应用';
+      return;
+    }
+    close();
+    toast('ok', `已将断线重连间隔设置为 ${parsed.seconds} 秒`);
+  });
+  input.focus();
+  input.select();
 }
 
 async function openSpawnDialog(obj) {
