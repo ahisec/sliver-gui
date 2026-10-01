@@ -17,25 +17,28 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
-	dingTalkConfigFilename = "dingtalk-notifications.json"
+	dingTalkConfigFilename = "dingtalk-notifications.yaml"
+	dingTalkConfigVersion  = 1
 	dingTalkResponseLimit  = 64 << 10
 )
 
 type DingTalkConfigInput struct {
-	Enabled     bool   `json:"enabled"`
-	Webhook     string `json:"webhook"`
-	Secret      string `json:"secret"`
-	ClearSecret bool   `json:"clearSecret"`
+	Enabled bool   `json:"enabled"`
+	Webhook string `json:"webhook"`
+	Secret  string `json:"secret"`
 }
 
 type DingTalkConfigView struct {
-	Enabled         bool `json:"enabled"`
-	WebhookSet      bool `json:"webhookSet"`
-	SecretSet       bool `json:"secretSet"`
-	ConfigurationOK bool `json:"configurationOk"`
+	Enabled         bool   `json:"enabled"`
+	Webhook         string `json:"webhook"`
+	Secret          string `json:"secret"`
+	ConfigurationOK bool   `json:"configurationOk"`
+	ConfigPath      string `json:"configPath"`
 }
 
 type DingTalkAgentNotice struct {
@@ -47,9 +50,16 @@ type DingTalkAgentNotice struct {
 }
 
 type dingTalkStoredConfig struct {
-	Enabled bool   `json:"enabled"`
-	Webhook string `json:"webhook"`
-	Secret  string `json:"secret,omitempty"`
+	Enabled bool
+	Webhook string
+	Secret  string
+}
+
+type dingTalkYAMLConfig struct {
+	Version int    `yaml:"version"`
+	Enabled bool   `yaml:"enabled"`
+	Webhook string `yaml:"webhook,omitempty"`
+	Secret  string `yaml:"secret,omitempty"`
 }
 
 type dingTalkAPIResponse struct {
@@ -72,7 +82,15 @@ var (
 )
 
 func dingTalkConfigPath() string {
-	return filepath.Join(configDir(), dingTalkConfigFilename)
+	executable, err := os.Executable()
+	if err != nil {
+		return dingTalkConfigFilename
+	}
+	return dingTalkConfigPathFromExecutable(executable)
+}
+
+func dingTalkConfigPathFromExecutable(executable string) string {
+	return filepath.Join(filepath.Dir(executable), dingTalkConfigFilename)
 }
 
 func validateDingTalkWebhook(raw string) (*url.URL, error) {
@@ -122,26 +140,56 @@ func loadDingTalkConfig(path string) (dingTalkStoredConfig, error) {
 		}
 		return dingTalkStoredConfig{}, err
 	}
-	plain, err := unprotectLocalSecret(data)
-	if err != nil {
-		return dingTalkStoredConfig{}, fmt.Errorf("无法解密钉钉通知配置: %w", err)
-	}
-	var cfg dingTalkStoredConfig
-	if err := json.Unmarshal(plain, &cfg); err != nil {
+	var document dingTalkYAMLConfig
+	if err := yaml.Unmarshal(data, &document); err != nil {
 		return dingTalkStoredConfig{}, fmt.Errorf("钉钉通知配置无效: %w", err)
 	}
-	return cfg, nil
+	if document.Version != dingTalkConfigVersion {
+		return dingTalkStoredConfig{}, fmt.Errorf("不支持的钉钉通知配置版本: %d", document.Version)
+	}
+	return dingTalkStoredConfig{Enabled: document.Enabled, Webhook: document.Webhook, Secret: document.Secret}, nil
+}
+
+func writeDingTalkYAML(path string, cfg dingTalkStoredConfig) error {
+	data, err := yaml.Marshal(dingTalkYAMLConfig{
+		Version: dingTalkConfigVersion,
+		Enabled: cfg.Enabled,
+		Webhook: cfg.Webhook,
+		Secret:  cfg.Secret,
+	})
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, ".dingtalk-notifications-*.yaml.tmp")
+	if err != nil {
+		return fmt.Errorf("程序目录不可写: %w", err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := replaceFileAtomically(tempPath, path); err != nil {
+		return fmt.Errorf("无法替换程序目录中的钉钉配置: %w", err)
+	}
+	return nil
 }
 
 func saveDingTalkConfig(path string, input DingTalkConfigInput) (dingTalkStoredConfig, error) {
-	previous, err := loadDingTalkConfig(path)
-	if err != nil {
-		return dingTalkStoredConfig{}, err
-	}
 	webhook := strings.TrimSpace(input.Webhook)
-	if webhook == "" {
-		webhook = previous.Webhook
-	}
 	if webhook != "" {
 		if _, err := validateDingTalkWebhook(webhook); err != nil {
 			return dingTalkStoredConfig{}, err
@@ -151,36 +199,21 @@ func saveDingTalkConfig(path string, input DingTalkConfigInput) (dingTalkStoredC
 		return dingTalkStoredConfig{}, errors.New("启用钉钉通知前必须填写 Webhook")
 	}
 	secret := strings.TrimSpace(input.Secret)
-	if input.ClearSecret {
-		secret = ""
-	} else if secret == "" {
-		secret = previous.Secret
-	}
 	cfg := dingTalkStoredConfig{Enabled: input.Enabled, Webhook: webhook, Secret: secret}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return dingTalkStoredConfig{}, err
-	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return dingTalkStoredConfig{}, err
-	}
-	protected, err := protectLocalSecret(data)
-	if err != nil {
-		return dingTalkStoredConfig{}, fmt.Errorf("无法保护钉钉通知配置: %w", err)
-	}
-	if err := os.WriteFile(path, protected, 0o600); err != nil {
+	if err := writeDingTalkYAML(path, cfg); err != nil {
 		return dingTalkStoredConfig{}, err
 	}
 	return cfg, nil
 }
 
-func dingTalkConfigView(cfg dingTalkStoredConfig) DingTalkConfigView {
+func dingTalkConfigView(cfg dingTalkStoredConfig, path string) DingTalkConfigView {
 	_, err := validateDingTalkWebhook(cfg.Webhook)
 	return DingTalkConfigView{
 		Enabled:         cfg.Enabled,
-		WebhookSet:      strings.TrimSpace(cfg.Webhook) != "",
-		SecretSet:       strings.TrimSpace(cfg.Secret) != "",
+		Webhook:         cfg.Webhook,
+		Secret:          cfg.Secret,
 		ConfigurationOK: err == nil,
+		ConfigPath:      path,
 	}
 }
 
@@ -246,7 +279,7 @@ func (a *App) GetDingTalkConfig() (DingTalkConfigView, error) {
 	if err != nil {
 		return DingTalkConfigView{}, err
 	}
-	return dingTalkConfigView(cfg), nil
+	return dingTalkConfigView(cfg, dingTalkConfigPath()), nil
 }
 
 func (a *App) SaveDingTalkConfig(input DingTalkConfigInput) (DingTalkConfigView, error) {
@@ -257,7 +290,7 @@ func (a *App) SaveDingTalkConfig(input DingTalkConfigInput) (DingTalkConfigView,
 		return DingTalkConfigView{}, err
 	}
 	a.audit.log("dingtalk-config", "local", map[bool]string{true: "enabled", false: "disabled"}[cfg.Enabled])
-	return dingTalkConfigView(cfg), nil
+	return dingTalkConfigView(cfg, dingTalkConfigPath()), nil
 }
 
 func (a *App) TestDingTalkNotification() error {

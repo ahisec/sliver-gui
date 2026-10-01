@@ -9,6 +9,7 @@ require (
 	golang.org/x/text v0.39.0
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -50,7 +51,6 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260316180232-0b37fe3546d5 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 // NOTE: bishopfox/sliver v1.7.3 requires a Go >= 1.25.6 toolchain (hence the

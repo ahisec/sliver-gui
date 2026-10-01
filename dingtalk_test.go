@@ -15,6 +15,7 @@ import (
 
 	"github.com/bishopfox/sliver/protobuf/clientpb"
 	"google.golang.org/protobuf/proto"
+	"gopkg.in/yaml.v3"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -49,38 +50,53 @@ func TestSignedDingTalkURLPreservesTokenAndAddsSignature(t *testing.T) {
 	}
 }
 
-func TestSaveDingTalkConfigPreservesExistingSecretAndUsesPrivatePermissions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", dingTalkConfigFilename)
+func TestSaveDingTalkConfigUsesPlaintextYAMLAndSupportsClearingSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), dingTalkConfigFilename)
 	webhook := "https://oapi.dingtalk.com/robot/send?access_token=test-token"
 	if _, err := saveDingTalkConfig(path, DingTalkConfigInput{Enabled: true, Webhook: webhook, Secret: "first-secret"}); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := saveDingTalkConfig(path, DingTalkConfigInput{Enabled: true, Webhook: webhook})
+	cfg, err := loadDingTalkConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Secret != "first-secret" {
-		t.Fatal("blank secret did not preserve the existing secret")
+		t.Fatal("saved secret was not restored")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "test-token") || strings.Contains(string(raw), "first-secret") {
-		t.Fatal("stored configuration contains plaintext credentials")
+	if !strings.Contains(string(raw), "access_token=test-token") || !strings.Contains(string(raw), "first-secret") {
+		t.Fatal("stored configuration does not contain the requested plaintext credentials")
+	}
+	var document dingTalkYAMLConfig
+	if err := yaml.Unmarshal(raw, &document); err != nil {
+		t.Fatalf("stored configuration is not valid YAML: %v", err)
+	}
+	if document.Version != dingTalkConfigVersion || !document.Enabled || document.Webhook != webhook || document.Secret != "first-secret" {
+		t.Fatalf("unexpected YAML document: %#v", document)
 	}
 	if runtime.GOOS != "windows" {
 		if info, err := os.Stat(path); err != nil || info.Mode().Perm()&0o077 != 0 {
 			t.Fatalf("config permissions are not private: info=%v err=%v", info, err)
 		}
 	}
-	view := dingTalkConfigView(cfg)
-	if !view.WebhookSet || !view.SecretSet || !view.ConfigurationOK {
-		t.Fatalf("config view leaked or lost secret state: %#v", view)
+	view := dingTalkConfigView(cfg, path)
+	if view.Webhook != webhook || view.Secret != "first-secret" || !view.ConfigurationOK || view.ConfigPath != path {
+		t.Fatalf("config view did not return the visible configuration: %#v", view)
 	}
-	cfg, err = saveDingTalkConfig(path, DingTalkConfigInput{Enabled: true, ClearSecret: true})
+	cfg, err = saveDingTalkConfig(path, DingTalkConfigInput{Enabled: true, Webhook: webhook})
 	if err != nil || cfg.Secret != "" {
-		t.Fatalf("explicit secret clearing failed: cfg=%#v err=%v", cfg, err)
+		t.Fatalf("clearing the visible secret failed: cfg=%#v err=%v", cfg, err)
+	}
+}
+
+func TestDingTalkConfigPathUsesExecutableDirectory(t *testing.T) {
+	executable := filepath.Join("C:\\Apps", "Sliver", "sliver-gui.exe")
+	want := filepath.Join(filepath.Dir(executable), dingTalkConfigFilename)
+	if got := dingTalkConfigPathFromExecutable(executable); got != want {
+		t.Fatalf("unexpected config path: got %q want %q", got, want)
 	}
 }
 

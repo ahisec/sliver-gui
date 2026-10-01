@@ -70,7 +70,7 @@
 | `GetBuilders` | 客户端本地辅助 | `panels.go:684` | `() ([]map[string]interface{}, error)` |
 | `GetCompilerInfo` | Sliver RPC/客户端封装 | `features.go:315` | `() (CompilerView, error)` |
 | `GetCredential` | Sliver RPC/客户端封装 | `features.go:721` | `(id string) (CredView, error)` |
-| `GetDingTalkConfig` | Sliver RPC/客户端封装 | `dingtalk.go:242` | `() (DingTalkConfigView, error)` |
+| `GetDingTalkConfig` | Sliver RPC/客户端封装 | `dingtalk.go:275` | `() (DingTalkConfigView, error)` |
 | `GetEngagementElapsed` | 客户端本地辅助 | `panels.go:672` | `() int64` |
 | `GetEnvVars` | Sliver RPC/客户端封装 | `app.go:591` | `(sessionID string) ([]EnvVar, error)` |
 | `GetExtensionCenterSnapshot` | Sliver RPC/客户端封装 | `extension_center.go:118` | `() ExtensionCenterSnapshot` |
@@ -139,7 +139,7 @@
 | `MoveFile` | Sliver RPC/客户端封装 | `app.go:860` | `(sessionID, src, dst string) error` |
 | `MsfInject` | Sliver RPC/客户端封装 | `app.go:1873` | `(sessionID, payload, lhost string, lport uint32) error` |
 | `MsfRemoteInject` | Sliver RPC/客户端封装 | `app.go:1888` | `(sessionID, payload, lhost string, lport, pid uint32) error` |
-| `NotifyDingTalkAgentOnline` | Sliver RPC/客户端封装 | `dingtalk.go:278` | `(notice DingTalkAgentNotice) error` |
+| `NotifyDingTalkAgentOnline` | Sliver RPC/客户端封装 | `dingtalk.go:311` | `(notice DingTalkAgentNotice) error` |
 | `ParseAndStoreCredentials` | 客户端本地辅助 | `panels.go:485` | `(output, source string) []ParsedCredential` |
 | `PickConfigFile` | RPC 与本地文件系统 | `app.go:105` | `() (string, error)` |
 | `PickPEMetadataFile` | RPC 与本地文件系统 | `app.go:115` | `() (string, error)` |
@@ -183,7 +183,7 @@
 | `RunExecute` | Sliver RPC/客户端封装 | `app.go:437` | `(sessionID, path string, args []string) ExecResult` |
 | `RunExtension` | Sliver RPC/客户端封装 | `extensions.go:328` | `(sessionID, command string, args []string) (string, error)` |
 | `SSHExec` | Sliver RPC/客户端封装 | `features.go:170` | `(sessionID, host string, port int, user, pass, command string) SSHResult` |
-| `SaveDingTalkConfig` | Sliver RPC/客户端封装 | `dingtalk.go:252` | `(input DingTalkConfigInput) (DingTalkConfigView, error)` |
+| `SaveDingTalkConfig` | Sliver RPC/客户端封装 | `dingtalk.go:285` | `(input DingTalkConfigInput) (DingTalkConfigView, error)` |
 | `SaveHTTPC2Profile` | Sliver RPC/客户端封装 | `features.go:607` | `(profileJSON string, overwrite bool) error` |
 | `SaveImplantProfile` | Sliver RPC/客户端封装 | `app.go:3342` | `(req GenerateRequest) error` |
 | `ScriptADEnum` | 客户端工作流编排 | `scripts.go:754` | `(sessionID string) ScriptResult` |
@@ -248,7 +248,7 @@
 | `StopService` | Sliver RPC/客户端封装 | `app.go:3227` | `(sessionID, hostname, serviceName string) error` |
 | `StopSocksProxy` | Sliver RPC/客户端封装 | `app.go:2705` | `(sessionID string) error` |
 | `TakeScreenshot` | Sliver RPC/客户端封装 | `app.go:465` | `(sessionID string) (string, error)` |
-| `TestDingTalkNotification` | Sliver RPC/客户端封装 | `dingtalk.go:263` | `() error` |
+| `TestDingTalkNotification` | Sliver RPC/客户端封装 | `dingtalk.go:296` | `() error` |
 | `UnsetEnvVar` | Sliver RPC/客户端封装 | `app.go:622` | `(sessionID, key string) error` |
 | `UpdateCredential` | Sliver RPC/客户端封装 | `features.go:693` | `(id, username, plaintext, hash string, cracked bool) error` |
 | `UpdateKillChain` | 客户端本地辅助 | `panels.go:618` | `(stage string) KillChainState` |
