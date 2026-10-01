@@ -651,10 +651,6 @@ input::placeholder{color:var(--muted);}
 .proc-toolbar .proc-search:focus { border-color: var(--accent); }
 .proc-toolbar .proc-search::placeholder { color: var(--muted); }
 .proc-full-info { color: var(--warn); font-size: 10.5px; white-space: nowrap; }
-.proc-toolbar .proc-tb-btn { height: 26px; padding: 0 10px; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-dim); cursor: pointer; font-size: 11px; font-weight: 600; transition: all .12s; display: flex; align-items: center; gap: 4px; }
-.proc-toolbar .proc-tb-btn:hover { background: var(--panel-alt); border-color: var(--muted); color: var(--text); }
-.proc-toolbar .proc-tb-btn.danger { color: var(--accent); border-color: rgba(226,60,78,.3); }
-.proc-toolbar .proc-tb-btn.danger:hover { background: rgba(226,60,78,.12); border-color: #e23c4e; color: #e23c4e; }
 .proc-col-header { display: grid; grid-template-columns: 28px 65px 65px 1fr 160px 60px; padding: 4px 10px; background: var(--panel); border-bottom: 1px solid var(--border-hi); color: var(--muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; flex-shrink: 0; user-select: none; }
 .proc-col-header span { padding: 2px 0; cursor: pointer; transition: color .1s; }
 .proc-col-header span:hover { color: var(--text); }

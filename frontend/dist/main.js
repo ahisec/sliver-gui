@@ -4548,21 +4548,25 @@ async function openFileBrowser(sessionID) {
     argsInput.focus();
   }
 
-  async function showFilePropertiesDialog(file) {
+  async function showFilePropertiesDialog(file, options = {}) {
     if (!file) return;
+    const openTimestampEditor = Boolean(options.editTimestamps);
     const ov = document.createElement('div');
     ov.className = 'ui-dialog-overlay';
     ov.innerHTML = `<div class="ui-dialog file-properties-dialog">
-      <div class="ui-dialog-title">属性</div>
+      <div class="ui-dialog-title">${openTimestampEditor ? '修改时间戳' : '属性'}</div>
       <div class="file-props-loading"><span class="spinner"></span>正在读取属性...</div>
     </div>`;
     document.body.appendChild(ov);
     let closed = false;
     let props = null;
     let hashResult = null;
-    let editingTimestamps = false;
+    let editingTimestamps = openTimestampEditor;
     let savingTimestamps = false;
-    let timestampDraft = { accessedAt: '', modifiedAt: '' };
+    let timestampDraft = {
+      accessedAt: '',
+      modifiedAt: TimestampEditor.unixSecondsToLocalInput(file.modTime),
+    };
     const close = () => {
       if (savingTimestamps) return;
       closed = true;
@@ -4591,7 +4595,7 @@ async function openFileBrowser(sessionID) {
         </div>
       </form>` : '';
       ov.innerHTML = `<div class="ui-dialog file-properties-dialog">
-        <div class="ui-dialog-title">属性</div>
+        <div class="ui-dialog-title">${editingTimestamps ? '修改时间戳' : '属性'}</div>
         <div class="file-props-head"><strong>${esc(file.name)}</strong><span>${esc(props?.type || (file.isDir ? '文件夹' : fileTypeLabel(file.name, false)))}</span></div>
         ${message ? `<div class="task-note ${state === 'error' ? 'error-msg' : ''}">${esc(message)}</div>` : ''}
         <dl class="file-props-grid">
@@ -4639,6 +4643,7 @@ async function openFileBrowser(sessionID) {
 
     function cancelTimestampEdit() {
       if (savingTimestamps) return;
+      if (openTimestampEditor) return close();
       editingTimestamps = false;
       draw('ready');
     }
@@ -4688,6 +4693,12 @@ async function openFileBrowser(sessionID) {
         return;
       }
       props = result;
+      if (openTimestampEditor && editingTimestamps) {
+        timestampDraft = {
+          accessedAt: TimestampEditor.unixSecondsToLocalInput(props?.accessedAt),
+          modifiedAt: TimestampEditor.unixSecondsToLocalInput(props?.modTime || file.modTime),
+        };
+      }
       draw('ready', successMessage);
     }
 
@@ -4711,8 +4722,9 @@ async function openFileBrowser(sessionID) {
     event.preventDefault();
     event.stopPropagation();
     const item = (action, label, danger = false) => `<button class="ctx-item${danger ? ' danger' : ''}" data-fb-action="${action}">${label}</button>`;
+    const actions = file ? ContextMenuActions.fileActions(file.isDir).map(entry => entry.separator ? '<div class="ctx-divider"></div>' : item(entry.action, entry.label, entry.danger)).join('') : '';
     ctxMenu.innerHTML = file
-      ? `<div class="ctx-agent"><strong>${esc(file.name)}</strong><span>${file.isDir ? '文件夹' : fileTypeLabel(file.name, false)}</span></div>${item('properties', '属性')}${file.isDir ? '' : item('execute', '运行程序')}${item('download', file.isDir ? '下载文件夹 (.tar.gz)' : '下载')}${item('upload', '上传到当前目录')}<div class="ctx-divider"></div>${item('delete', '删除', true)}`
+      ? `<div class="ctx-agent"><strong>${esc(file.name)}</strong><span>${file.isDir ? '文件夹' : fileTypeLabel(file.name, false)}</span></div>${actions}`
       : `<div class="ctx-agent"><strong>${esc(currentPath)}</strong><span>当前目录</span></div>${item('upload', '上传文件')}`;
     ctxMenu.style.left = Math.max(8, Math.min(event.clientX, window.innerWidth - 230)) + 'px';
     ctxMenu.style.top = Math.max(8, Math.min(event.clientY, window.innerHeight - 180)) + 'px';
@@ -4723,7 +4735,7 @@ async function openFileBrowser(sessionID) {
       const action = button.dataset.fbAction;
       if (action === 'upload') return uploadToCurrentDirectory();
       if (!file) return;
-      if (action === 'properties') return showFilePropertiesDialog(file);
+      if (action === 'timestamps') return showFilePropertiesDialog(file, { editTimestamps: true });
       if (action === 'execute' && !file.isDir) return showFileExecuteDialog(file);
       if (action === 'download') {
         const result = await runFileTransfer('download', sessionID, file.path);
@@ -4894,10 +4906,6 @@ async function openProcessBrowser(sessionID) {
       <div class="proc-toolbar">
         <input class="proc-search" id="proc-filter-${dockId}" type="text" placeholder="🔍 筛选进程..." />
         <span class="proc-full-info" title="Sliver 完整进程枚举在部分 Windows 环境中可能被 EDR 监测">完整信息 · 注意 EDR</span>
-        <button class="proc-tb-btn" id="proc-refresh-${dockId}">🔄 刷新</button>
-        <button class="proc-tb-btn danger" id="proc-kill-btn-${dockId}">☠️ 终止</button>
-        <button class="proc-tb-btn" id="proc-dump-btn-${dockId}">💾 转储</button>
-        <button class="proc-tb-btn" id="proc-migrate-btn-${dockId}">🎯 迁移</button>
       </div>
       <div class="proc-col-header">
         <span></span><span>PID</span><span>PPID</span><span>名称</span><span>所有者</span><span>架构</span>
@@ -4945,7 +4953,43 @@ async function openProcessBrowser(sessionID) {
       countLabel.textContent = q ? `${visible} / ${allProcs.length} 个进程` : `${allProcs.length} 个进程`;
     });
 
-    // Row selection
+    async function runProcessAction(action, process) {
+      const pid = Number(process.pid);
+      if (action === 'refresh') return loadProcs();
+      if (action === 'kill') {
+        const ok = await uiConfirm(`确定终止 PID ${pid}（${process.executable || '未知进程'}）吗？`, { title: '终止进程', okLabel: '终止', danger: true });
+        if (!ok) return;
+        const killError = await App().ProcessBrowserKill(sessionID, pid).then(() => null).catch(error => error);
+        if (killError) return toastRpcError(killError, '终止进程失败');
+        toast('ok', `已终止 PID ${pid}`);
+        return loadProcs();
+      }
+      if (action === 'dump') {
+        const result = await App().ProcessDump(sessionID, pid).catch(error => ({ error }));
+        if (result.error) return toastRpcError(result.error, '进程转储失败');
+        return toast('ok', `PID ${pid} 的内存转储已保存到 ${result.path}`);
+      }
+      if (action === 'migrate') return openMigrateDialog(sessionID, pid);
+    }
+
+    function showProcessContextMenu(event, process) {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = entry => entry.separator
+        ? '<div class="ctx-divider"></div>'
+        : `<button class="ctx-item${entry.danger ? ' danger' : ''}" data-pb-action="${entry.action}">${entry.label}</button>`;
+      ctxMenu.innerHTML = `<div class="ctx-agent"><strong>${esc(process.executable || '未知进程')}</strong><span>PID ${process.pid}</span></div>${ContextMenuActions.processActions().map(item).join('')}`;
+      ctxMenu.style.left = Math.max(8, Math.min(event.clientX, window.innerWidth - 230)) + 'px';
+      ctxMenu.style.top = Math.max(8, Math.min(event.clientY, window.innerHeight - 220)) + 'px';
+      ctxMenu.classList.remove('hidden');
+      ctxMenu.querySelectorAll('[data-pb-action]').forEach(button => button.addEventListener('click', clickEvent => {
+        clickEvent.stopPropagation();
+        ctxMenu.classList.add('hidden');
+        runProcessAction(button.dataset.pbAction, process);
+      }));
+    }
+
+    // Row selection and context actions
     let selectedPID = null;
     container.querySelectorAll('.proc-item').forEach(item => {
       item.addEventListener('click', () => {
@@ -4954,28 +4998,14 @@ async function openProcessBrowser(sessionID) {
         selectedPID = parseInt(item.dataset.pid);
         container.querySelector(`#proc-selected-${dockId}`).textContent = `已选择：PID ${selectedPID} — ${item.querySelector('.proc-exe')?.textContent || ''}`;
       });
-    });
-
-    // Action buttons
-    container.querySelector(`#proc-refresh-${dockId}`)?.addEventListener('click', () => loadProcs());
-    container.querySelector(`#proc-kill-btn-${dockId}`)?.addEventListener('click', async () => {
-      if (!selectedPID) { toast('info', '请先选择一个进程'); return; }
-      const ok = await uiConfirm(`确定终止 PID ${selectedPID} 吗？`, { title: '终止进程', okLabel: '终止', danger: true });
-      if (!ok) return;
-      const killError = await App().ProcessBrowserKill(sessionID, selectedPID).then(() => null).catch(e => e);
-      if (killError) { toastRpcError(killError, '终止进程失败'); return; }
-      toast('ok', `已终止 PID ${selectedPID}`);
-      loadProcs();
-    });
-    container.querySelector(`#proc-migrate-btn-${dockId}`)?.addEventListener('click', () => {
-      if (!selectedPID) { toast('info', '请先选择一个进程'); return; }
-      openMigrateDialog(sessionID, selectedPID);
-    });
-    container.querySelector(`#proc-dump-btn-${dockId}`)?.addEventListener('click', async () => {
-      if (!selectedPID) { toast('info', '请先选择一个进程'); return; }
-      const result = await App().ProcessDump(sessionID, selectedPID).catch(error => ({error}));
-      if (result.error) return toastRpcError(result.error, '进程转储失败');
-      toast('ok', `PID ${selectedPID} 的内存转储已保存到 ${result.path}`);
+      item.addEventListener('contextmenu', event => {
+        container.querySelectorAll('.proc-item').forEach(row => row.classList.remove('selected'));
+        item.classList.add('selected');
+        selectedPID = Number(item.dataset.pid);
+        const process = allProcs.find(entry => Number(entry.pid) === selectedPID) || { pid: selectedPID, executable: item.querySelector('.proc-exe')?.textContent || '' };
+        container.querySelector(`#proc-selected-${dockId}`).textContent = `已选择：PID ${selectedPID} — ${process.executable || ''}`;
+        showProcessContextMenu(event, process);
+      });
     });
   }
   loadProcs();
