@@ -194,6 +194,20 @@ func (a *App) requireClient() (*sliverclient.Client, error) {
 	return a.client, nil
 }
 
+func beaconEventView(data []byte) map[string]interface{} {
+	beacon := &clientpb.Beacon{}
+	if len(data) == 0 || proto.Unmarshal(data, beacon) != nil || strings.TrimSpace(beacon.ID) == "" {
+		return nil
+	}
+	return map[string]interface{}{
+		"id":       beacon.ID,
+		"hostname": beacon.Hostname,
+		"username": beacon.Username,
+		"os":       beacon.OS,
+		"arch":     beacon.Arch,
+	}
+}
+
 // ─── Event Stream ─────────────────────────────────────────────────────────────
 
 func (a *App) startEventStream() {
@@ -235,8 +249,13 @@ func (a *App) startEventStream() {
 					"arch":     event.Session.Arch,
 				}
 			}
-			// NOTE: clientpb.Event has no Beacon field in v1.7.3 — beacon
-			// events carry their payload in event.Data (already emitted above).
+			// clientpb.Event has no Beacon field, but beacon-registered events
+			// carry a serialized clientpb.Beacon in Data.
+			if event.EventType == "beacon-registered" && len(event.Data) > 0 {
+				if beacon := beaconEventView(event.Data); beacon != nil {
+					payload["beacon"] = beacon
+				}
+			}
 			if event.Job != nil {
 				payload["job"] = map[string]interface{}{
 					"id":   event.Job.ID,

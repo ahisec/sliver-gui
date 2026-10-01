@@ -29,6 +29,7 @@ const defaultNotificationSettings = {
 let notificationSettings = loadNotificationSettings();
 let listenerSnapshot = null;
 const taskNotificationStates = new Map();
+const agentNotificationState = AgentNotificationState.create();
 
 function loadNotificationSettings() {
   try {
@@ -308,11 +309,12 @@ async function enterApp(info) {
   loadState();
   const ver = await App().GetVersion().catch(() => null);
   if (ver) document.getElementById('server-version').textContent = `v${ver.major}.${ver.minor}.${ver.patch}`;
+  await refreshAgents();
+  agentNotificationState.reset(allSessions, allBeacons);
   wireEventStream();
   pinServerConsole();     // Server console docked by default
   pinEvents();            // Event Log docked in the console by default
   pinScripts();           // Script Manager docked in the console by default
-  refreshAgents();
   pollTimer = setInterval(refreshAgents, 5000);
 }
 
@@ -336,6 +338,7 @@ document.getElementById('disconnect-btn').addEventListener('click', async () => 
   pivotTree = [];
   activeInteractId = null;
   allSessions = []; allBeacons = [];
+  agentNotificationState.clear();
   listenerSnapshot = null;
   selectedConfigPath = null; cancelReconnect();
 });
@@ -345,13 +348,29 @@ function wireEventStream() {
   if (!window.runtime) return;
   window.runtime.EventsOff('sliver:event'); window.runtime.EventsOff('sliver:disconnected');
   window.runtime.EventsOn('sliver:disconnected', (reason) => onDisconnected(reason));
-  window.runtime.EventsOn('sliver:event', (ev) => {
+  window.runtime.EventsOn('sliver:event', async (ev) => {
     logEvent(ev);
     if (ev.type && ev.type.includes('session')) refreshAgents();
     if (ev.type && ev.type.includes('beacon')) refreshAgents();
-    if (ev.type === 'session-connected' || ev.type === 'session-opened') notifyOperational({ category:'agent', level:'info', title:'Session 上线', message:`新会话：${ev.session?.hostname||'未知主机'}`, tag:'session-online' });
-    if (ev.type === 'beacon-registered') notifyOperational({ category:'agent', level:'info', title:'Beacon 上线', message:`信标已注册：${ev.session?.hostname||'未知主机'}`, tag:'beacon-online' });
+    if ((ev.type === 'session-connected' || ev.type === 'session-opened') && ev.session) await handleAgentOnline('session', ev.session);
+    if (ev.type === 'beacon-registered' && ev.beacon) await handleAgentOnline('beacon', ev.beacon);
   });
+}
+
+async function handleAgentOnline(kind, agent) {
+  if (!agentNotificationState.take(kind, agent)) return;
+  const label = kind === 'beacon' ? 'Beacon' : 'Session';
+  const event = { category:'agent', level:'info', title:`${label} 上线`, message:`${label} 已上线：${agent.hostname || '未知主机'}`, tag:`${kind}-online-${agent.id}` };
+  if (!NotificationRules.shouldNotify(event, notificationSettings)) return;
+  notifyOperational(event);
+  const error = await App().NotifyDingTalkAgentOnline({
+    kind,
+    hostname: agent.hostname || '',
+    username: agent.username || '',
+    os: agent.os || '',
+    arch: agent.arch || '',
+  }).then(() => null).catch(value => value);
+  if (error) toastRpcError(error, '钉钉上线通知发送失败');
 }
 function logEvent(ev) {
   eventLog.unshift({ time: new Date().toLocaleTimeString(), type: ev.type||'unknown', detail: ev.session ? `${ev.session.hostname} (${ev.session.os}) ${ev.session.username||''}` : (ev.data||'') });
@@ -2867,9 +2886,11 @@ function renderAuditTimeline(content) {
   loadAuditTimeline();
 }
 
-function renderNotificationSettings(content) {
+async function renderNotificationSettings(content) {
   const settings = notificationSettings;
-  content.innerHTML = `<div class="notification-form"><label class="check-label"><input id="notify-enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}/> 启用应用内通知</label><label>最低级别<select id="notify-level"><option value="info">信息</option><option value="warning">警告</option><option value="critical">严重</option></select></label><fieldset><legend>通知类别</legend><label class="check-label"><input id="notify-agent" type="checkbox" ${settings.categories.agent ? 'checked' : ''}/> Session / Beacon 上线</label><label class="check-label"><input id="notify-task" type="checkbox" ${settings.categories.task ? 'checked' : ''}/> 任务失败</label><label class="check-label"><input id="notify-listener" type="checkbox" ${settings.categories.listener ? 'checked' : ''}/> Listener 异常</label></fieldset><div class="quiet-row"><label>静默开始<input id="notify-quiet-start" type="time" value="${esc(settings.quietStart)}"/></label><label>静默结束<input id="notify-quiet-end" type="time" value="${esc(settings.quietEnd)}"/></label></div><label class="check-label"><input id="notify-desktop" type="checkbox" ${settings.desktop ? 'checked' : ''}/> 启用 Windows 桌面通知</label><div class="ext-actions"><button class="btn accent" id="notify-save">保存设置</button><button class="btn small" id="notify-test">测试通知</button></div><div class="task-note">桌面通知仅在显式启用后申请系统权限。Listener 异常为客户端对活动 Job 列表的观察结果。</div></div>`;
+  const dingTalk = await App().GetDingTalkConfig().catch(error => ({ error }));
+  if (!content.isConnected || teamCenterState.tab !== 'notifications') return;
+  content.innerHTML = `<div class="notification-form"><label class="check-label"><input id="notify-enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}/> 启用应用内通知</label><label>最低级别<select id="notify-level"><option value="info">信息</option><option value="warning">警告</option><option value="critical">严重</option></select></label><fieldset><legend>通知类别</legend><label class="check-label"><input id="notify-agent" type="checkbox" ${settings.categories.agent ? 'checked' : ''}/> Session / Beacon 上线</label><label class="check-label"><input id="notify-task" type="checkbox" ${settings.categories.task ? 'checked' : ''}/> 任务失败</label><label class="check-label"><input id="notify-listener" type="checkbox" ${settings.categories.listener ? 'checked' : ''}/> Listener 异常</label></fieldset><div class="quiet-row"><label>静默开始<input id="notify-quiet-start" type="time" value="${esc(settings.quietStart)}"/></label><label>静默结束<input id="notify-quiet-end" type="time" value="${esc(settings.quietEnd)}"/></label></div><label class="check-label"><input id="notify-desktop" type="checkbox" ${settings.desktop ? 'checked' : ''}/> 启用 Windows 桌面通知</label><div class="ext-actions"><button class="btn accent" id="notify-save">保存设置</button><button class="btn small" id="notify-test">测试本地通知</button></div><div class="task-note">桌面通知仅在显式启用后申请系统权限。Listener 异常为客户端对活动 Job 列表的观察结果。</div><fieldset class="dingtalk-settings"><legend>钉钉机器人</legend>${dingTalk.error ? `<div class="execute-file-error">${esc(rpcErrorMessage(dingTalk.error, '读取钉钉配置失败'))}</div>` : `<label class="check-label"><input id="dingtalk-enabled" type="checkbox" ${dingTalk.enabled ? 'checked' : ''}/> 新 Session / Beacon 上线时通知</label><label>Webhook<input id="dingtalk-webhook" type="password" autocomplete="new-password" placeholder="${dingTalk.webhookSet ? '已配置；留空保留现有 Webhook' : 'https://oapi.dingtalk.com/robot/send?access_token=...'}"/></label><label>加签密钥（可选）<input id="dingtalk-secret" type="password" autocomplete="new-password" placeholder="${dingTalk.secretSet ? '已配置；留空保留现有密钥' : 'SEC...'}"/></label>${dingTalk.secretSet ? '<label class="check-label"><input id="dingtalk-clear-secret" type="checkbox"/> 清除已有加签密钥</label>' : ''}<div class="dingtalk-state">${dingTalk.configurationOk ? '配置状态：有效' : dingTalk.webhookSet ? '配置状态：需要重新保存' : '配置状态：未配置'}</div><div class="ext-actions"><button class="btn accent" id="dingtalk-save">保存钉钉配置</button><button class="btn small" id="dingtalk-test" ${dingTalk.configurationOk ? '' : 'disabled'}>发送测试通知</button></div><div class="task-note">Webhook Token 和加签密钥仅保存在本机，不会在界面回显。上线通知只包含类型、主机、用户、系统/架构和时间。</div>`}</fieldset></div>`;
   document.getElementById('notify-level').value = settings.minimumLevel;
   document.getElementById('notify-save')?.addEventListener('click', async () => {
     const desktop = document.getElementById('notify-desktop').checked;
@@ -2886,6 +2907,35 @@ function renderNotificationSettings(content) {
     saveNotificationSettings(); toast('ok','通知设置已保存');
   });
   document.getElementById('notify-test')?.addEventListener('click', () => notifyOperational({ category:'agent', level:'info', title:'通知测试', message:'通知规则工作正常', tag:'notification-test' }));
+  document.getElementById('dingtalk-save')?.addEventListener('click', async () => {
+    const button = document.getElementById('dingtalk-save');
+    button.disabled = true;
+    button.textContent = '正在保存...';
+    const result = await App().SaveDingTalkConfig({
+      enabled: document.getElementById('dingtalk-enabled').checked,
+      webhook: document.getElementById('dingtalk-webhook').value.trim(),
+      secret: document.getElementById('dingtalk-secret').value.trim(),
+      clearSecret: Boolean(document.getElementById('dingtalk-clear-secret')?.checked),
+    }).then(value => ({ value })).catch(error => ({ error }));
+    if (result.error) {
+      toastRpcError(result.error, '保存钉钉配置失败');
+      button.disabled = false;
+      button.textContent = '保存钉钉配置';
+      return;
+    }
+    toast('ok', '钉钉机器人配置已保存');
+    renderNotificationSettings(content);
+  });
+  document.getElementById('dingtalk-test')?.addEventListener('click', async () => {
+    const button = document.getElementById('dingtalk-test');
+    button.disabled = true;
+    button.textContent = '正在发送...';
+    const error = await App().TestDingTalkNotification().then(() => null).catch(value => value);
+    if (error) toastRpcError(error, '钉钉测试通知失败');
+    else toast('ok', '钉钉测试通知已发送');
+    button.disabled = false;
+    button.textContent = '发送测试通知';
+  });
 }
 
 function reportRequest(redactOperational) {
@@ -4353,7 +4403,15 @@ async function attemptReconnect() {
   clearInterval(reconnectTimer);
   document.getElementById('reconnect-status').textContent = '正在重新连接...';
   const r = await App().Connect(lastConfigPath).catch(error => ({error}));
-  if (r && r.connected) { reconnecting = false; document.getElementById('reconnect-overlay').classList.add('hidden'); wireEventStream(); refreshAgents(); pollTimer = setInterval(refreshAgents, 5000); toast('ok','已重新连接'); }
+  if (r && r.connected) {
+    reconnecting = false;
+    document.getElementById('reconnect-overlay').classList.add('hidden');
+    await refreshAgents();
+    agentNotificationState.reset(allSessions, allBeacons);
+    wireEventStream();
+    pollTimer = setInterval(refreshAgents, 5000);
+    toast('ok','已重新连接');
+  }
   else { document.getElementById('reconnect-status').textContent = r?.error ? rpcErrorMessage(r.error, '重新连接失败') : '重新连接失败'; startReconnect(); }
 }
 function cancelReconnect() { reconnecting = false; clearInterval(reconnectTimer); document.getElementById('reconnect-overlay').classList.add('hidden'); }
