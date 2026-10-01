@@ -314,6 +314,7 @@ type SessionView struct {
 	LastCheckin string `json:"lastCheckin"`
 	PID         int32  `json:"pid"`
 	ProcessName string `json:"processName"`
+	Integrity   string `json:"integrity"`
 	IsDead      bool   `json:"isDead"`
 }
 
@@ -346,6 +347,7 @@ func sessionToView(s *clientpb.Session) SessionView {
 		LastCheckin: time.Unix(s.LastCheckin, 0).Format("15:04:05"),
 		PID:         s.PID,
 		ProcessName: filepath.Base(strings.ReplaceAll(s.Filename, "\\", "/")),
+		Integrity:   s.Integrity,
 		IsDead:      s.IsDead,
 	}
 }
@@ -2232,6 +2234,7 @@ type BeaconView struct {
 	RemoteAddr  string `json:"remoteAddress"`
 	PID         int32  `json:"pid"`
 	ProcessName string `json:"processName"`
+	Integrity   string `json:"integrity"`
 	Interval    int64  `json:"interval"`
 	Jitter      int64  `json:"jitter"`
 	LastCheckin string `json:"lastCheckin"`
@@ -2261,6 +2264,7 @@ func (a *App) ListBeacons() ([]BeaconView, error) {
 			RemoteAddr:  b.RemoteAddress,
 			PID:         b.PID,
 			ProcessName: filepath.Base(strings.ReplaceAll(b.Filename, "\\", "/")),
+			Integrity:   b.Integrity,
 			Interval:    b.Interval,
 			Jitter:      b.Jitter,
 			LastCheckin: time.Unix(b.LastCheckin, 0).Format("15:04:05"),

@@ -133,6 +133,15 @@ func TestFormatFromString(t *testing.T) {
 	}
 }
 
+func TestSessionToViewPreservesIntegrity(t *testing.T) {
+	view := sessionToView(&clientpb.Session{
+		ID: "session-1", Username: `DOMAIN\operator`, Integrity: "High", Filename: `C:\Windows\agent.exe`,
+	})
+	if view.Integrity != "High" || view.ProcessName != "agent.exe" {
+		t.Fatalf("session metadata was not preserved: %#v", view)
+	}
+}
+
 func TestParseCSVLine(t *testing.T) {
 	cases := []struct {
 		in   string

@@ -405,6 +405,15 @@ function renderEventsList() {
 async function refreshAgents() {
   allSessions = await App().ListSessions().catch(() => []) || [];
   allBeacons = await App().ListBeacons().catch(() => []) || [];
+  let integrityChanged = false;
+  [...allSessions, ...allBeacons].forEach(agent => {
+    const integrity = String(agent.integrity || '').trim();
+    if (integrity && integrityMap[agent.id] !== integrity) {
+      integrityMap[agent.id] = integrity;
+      integrityChanged = true;
+    }
+  });
+  if (integrityChanged) saveAgentState();
   pivotTree = await App().GetPivotGraph().catch(() => []) || [];
   updateAgentCount();
   renderTable();
