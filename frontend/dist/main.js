@@ -4,6 +4,7 @@ let lastConfigPath = null, reconnectTimer = null, reconnecting = false;
 let teamserverLabel = 'teamserver';
 let allSessions = [], allBeacons = [];
 let agentListFilter = 'sessions';
+const dismissedOfflineAgents = new Set();
 let agentRefreshInFlight = false;
 const internalIPMap = {};
 const internalIPPending = new Set();
@@ -418,6 +419,9 @@ async function refreshAgents(establishBaseline = false) {
   }
   if (sessions) allSessions = sessions;
   if (beacons) allBeacons = beacons;
+  [...allSessions, ...allBeacons].forEach(agent => {
+    if (!agent.isDead) dismissedOfflineAgents.delete(agent.id);
+  });
   if (graph) pivotTree = graph;
   let integrityChanged = false;
   [...allSessions, ...allBeacons].forEach(agent => {
@@ -501,11 +505,11 @@ async function loadInternalIP(agent) {
   renderTable();
 }
 function visibleAgents() {
-  if (agentListFilter === 'beacons') return allBeacons.map(obj => ({ kind:'beacon', obj }));
-  return allSessions.map(obj => ({ kind:'session', obj }));
+  if (agentListFilter === 'beacons') return allBeacons.filter(obj => !dismissedOfflineAgents.has(obj.id)).map(obj => ({ kind:'beacon', obj }));
+  return allSessions.filter(obj => !dismissedOfflineAgents.has(obj.id)).map(obj => ({ kind:'session', obj }));
 }
 function updateAgentCount() {
-  const count = agentListFilter === 'beacons' ? allBeacons.length : allSessions.length;
+  const count = visibleAgents().length;
   document.getElementById('agent-count').textContent = `${count} 个${agentListFilter === 'beacons' ? '信标' : '会话'}`;
 }
 function selectAgentList(view) {
@@ -541,6 +545,16 @@ function refreshOpenAgentHeaders() {
   }
 }
 document.getElementById('refresh-all-btn').addEventListener('click', refreshAgents);
+document.getElementById('clear-offline-btn').addEventListener('click', async () => {
+  const agents = agentListFilter === 'beacons' ? allBeacons : allSessions;
+  const offline = agents.filter(agent => agent.isDead && !dismissedOfflineAgents.has(agent.id));
+  if (!offline.length) return toast('info', '当前列表没有离线主机');
+  if (!(await uiConfirm(`确定从当前客户端视图隐藏 ${offline.length} 个离线${agentListFilter === 'beacons' ? '信标' : '会话'}吗？\n不会删除 Teamserver 数据，也不会向目标发送命令。`, { title:'清空离线主机', okLabel:'清空' }))) return;
+  offline.forEach(agent => dismissedOfflineAgents.add(agent.id));
+  updateAgentCount(); renderTable();
+  if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
+  toast('ok', `已隐藏 ${offline.length} 个离线主机`);
+});
 
 // ── Table view ─────────────────────────────────────────────────────────────
 // userCell renders the user column, highlighting privileged (SYSTEM/admin/★) agents.
@@ -949,14 +963,15 @@ function showCtx(e, kind, obj) {
   e.preventDefault(); activeCtxAgent = { kind, obj };
   const session = kind === 'session', windows = (obj.os || '').toLowerCase().includes('windows');
   const item = (action, label, options = {}) => `<button class="ctx-item${options.danger ? ' danger' : ''}" data-ctx-action="${action}" ${options.disabled ? 'disabled' : ''}>${label}</button>`;
-  const sessionActions = session ? ContextMenuActions.sessionHostActions(windows).map(entry => item(entry.action, entry.label)).join('') : '<div class="ctx-hint">实时浏览和主机操作需使用 Session</div>';
+  const hostActions = (session ? ContextMenuActions.sessionHostActions(windows) : ContextMenuActions.beaconHostActions(windows)).map(entry => item(entry.action, entry.label, entry)).join('');
   ctxMenu.innerHTML = `<div class="ctx-agent"><strong>${esc(obj.hostname || obj.name || obj.id.slice(0,8))}</strong><span>${session ? '实时会话' : '异步信标'}</span></div>
     ${item('overview','主机概览')}${session ? '' : item('interact','打开信标工作区')}
     <div class="ctx-divider"></div>
-    ${sessionActions}
+    ${hostActions}
+    ${session ? '' : '<div class="ctx-hint">文件、进程和网络实时浏览需要先转为 Session</div>'}
     <div class="ctx-divider"></div>
     ${item('copy-summary','复制目标摘要')}
-    ${session ? item('rename','重命名') : ''}<div class="ctx-divider"></div>${item('kill','终止', {danger:true})}`;
+    ${item('rename','重命名')}<div class="ctx-divider"></div>${item('kill', session ? '终止' : '删除信标记录', {danger:true})}`;
   ctxMenu.style.left = Math.max(8, Math.min(e.clientX, window.innerWidth-230))+'px';
   ctxMenu.style.top = Math.max(8, Math.min(e.clientY, window.innerHeight-Math.min(560, ctxMenu.scrollHeight || 560)))+'px';
   ctxMenu.classList.remove('hidden');
@@ -975,19 +990,28 @@ ctxMenu.addEventListener('click', async event => {
   if (action === 'upload') return uploadFromContext(obj);
   if (action === 'processes') return openProcessBrowser(obj.id);
   if (action === 'spawn') return openSpawnDialog(obj);
-  if (action === 'sleep') return openSessionSleepDialog(obj);
+  if (action === 'interactive-session') return requestInteractiveSession(obj);
+  if (action === 'beacon-timing') return openBeaconTimingDialog(obj);
+  if (action === 'beacon-tasks') { openInteract(kind, obj); return setTimeout(() => switchWorkspaceView(obj.id, 'tasks'), 0); }
   if (action === 'infrastructure') { await openInfrastructurePanel(); const select = document.getElementById('infra-session-filter'); if (select) { select.value = obj.id; select.dispatchEvent(new Event('change')); } return; }
   if (action === 'automation') { await openScriptsPanel(); const select = document.getElementById('scr-session'); if (select) select.value = obj.id; return; }
   if (action.startsWith('copy-')) return copyAgentValue(action, kind, obj);
-  if (action === 'integrity') return checkAgentIntegrity(obj);
-  if (action === 'rename') return renameContextSession(obj);
+  if (action === 'integrity') return checkAgentIntegrity(kind, obj);
+  if (action === 'rename') return renameContextAgent(kind, obj);
   if (action === 'kill') return killContextAgent(kind, obj);
 });
 
-async function checkAgentIntegrity(obj) {
+async function checkAgentIntegrity(kind, obj) {
   toast('info', `正在检查 ${obj.hostname} 的完整性级别...`);
-  const r = await App().GetPrivs(obj.id).catch(() => null);
-  if (!r || !r.integrity) return toast('err', 'getprivs 失败（需要在线的 Windows 会话）');
+  const r = kind === 'beacon'
+    ? await App().StartBeaconIntegrityProbe(obj.id).catch(() => null)
+    : await App().GetPrivs(obj.id).catch(() => null);
+  if (kind === 'beacon' && r?.taskId) {
+    beaconIntegrityTasks[obj.id] = r.taskId;
+    integrityProbeRetry[obj.id] = { at: Date.now() + 3000, delay: 3000 };
+    return toast('ok', '完整性检查已排队，将在信标下次回连后更新');
+  }
+  if (!r || !r.integrity) return toast('err', '完整性检查失败');
   integrityMap[obj.id] = r.integrity;
   saveState();
   const label = integrityLabel(obj) || r.integrity;
@@ -995,15 +1019,16 @@ async function checkAgentIntegrity(obj) {
   renderTable();
   if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
 }
-async function renameContextSession(obj) {
-  const n = await uiPrompt('新名称：', obj.name || '', { title: '重命名会话' }); if (!n) return;
-  await App().RenameSession(obj.id, n)
-    .then(() => toast('ok', '会话已重命名'))
+async function renameContextAgent(kind, obj) {
+  const label = kind === 'session' ? '会话' : '信标';
+  const n = await uiPrompt('新名称：', obj.name || '', { title: `重命名${label}` }); if (!n) return;
+  await (kind === 'session' ? App().RenameSession(obj.id, n) : App().RenameBeacon(obj.id, n))
+    .then(() => toast('ok', `${label}已重命名`))
     .catch(e => toastRpcError(e, '重命名失败'));
   refreshAgents();
 }
 async function killContextAgent(kind, obj) {
-  if (!(await uiConfirm(`确定终止 ${obj.hostname || obj.id} 上的${kind === 'session' ? '会话' : '信标'}吗？`, { title: '终止代理', okLabel: '终止', danger: true }))) return;
+  if (!(await uiConfirm(kind === 'session' ? `确定终止 ${obj.hostname || obj.id} 上的会话吗？` : `确定删除信标 ${obj.hostname || obj.id} 的 Teamserver 记录及任务历史吗？`, { title: kind === 'session' ? '终止会话' : '删除信标记录', okLabel: kind === 'session' ? '终止' : '删除', danger: true }))) return;
   const call = kind === 'session' ? App().KillSession(obj.id) : App().KillBeacon(obj.id);
   await call
     .then(() => toast('ok', `已终止${kind === 'session' ? '会话' : '信标'} ${obj.hostname || ''}`.trim()))
@@ -1059,22 +1084,29 @@ async function openMigrateDialog(sessionID, initialPID = '') {
   await App().Migrate(sessionID, Number(pid), profile).then(() => toast('ok', `已提交迁移到 PID ${pid}`)).catch(error => toastRpcError(error, '进程迁移失败'));
 }
 
-function openSessionSleepDialog(obj) {
+async function requestInteractiveSession(obj) {
+  if (!(await uiConfirm(`确定让信标“${obj.hostname || obj.name || obj.id}”在下次回连时建立实时 Session 吗？`, { title:'转为实时会话', okLabel:'提交' }))) return;
+  await App().InteractiveBeacon(obj.id)
+    .then(() => toast('ok', '已提交交互请求，将在信标下次回连时生效'))
+    .catch(error => toastRpcError(error, '提交交互请求失败'));
+}
+
+function openBeaconTimingDialog(obj) {
   const ov = document.createElement('div');
   ov.className = 'ui-dialog-overlay';
   ov.innerHTML = `<div class="ui-dialog">
-    <div class="ui-dialog-title">Sleep / 重连间隔</div>
+    <div class="ui-dialog-title">信标回连间隔 / 抖动</div>
     <form class="execute-file-form">
       <label><span>目标主机</span><input type="text" value="${esc(obj.hostname || obj.name || obj.id)}" readonly/></label>
-      <label><span>重连间隔（秒）</span><input name="seconds" type="number" min="1" max="${SessionReconnect.MAX_SECONDS}" step="1" value="60" required/><small>允许范围：1 秒到 7 天。</small></label>
-      <div class="execute-file-note">实时 Session 使用持续连接。此设置只控制连接断开后的等待时间，不会暂停或静默当前在线连接。</div>
+      <label><span>回连间隔（秒）</span><input name="interval" type="number" min="1" max="604800" step="1" value="${Math.max(1, Math.round(Number(obj.interval || 60000000000) / 1000000000))}" required/></label>
+      <label><span>抖动（秒）</span><input name="jitter" type="number" min="0" max="604800" step="1" value="${Math.max(0, Math.round(Number(obj.jitter || 0) / 1000000000))}" required/></label>
+      <div class="execute-file-note">这是 Beacon 官方支持的签到计划，任务将在下次回连时应用。实时 Session 不支持暂停式 Sleep，因此 Session 菜单不再提供该项。</div>
       <div class="execute-file-error" role="alert"></div>
       <div class="ui-dialog-actions"><button type="button" class="btn small" data-dialog-cancel>取消</button><button type="submit" class="btn small accent" data-dialog-apply>应用</button></div>
     </form>
   </div>`;
   document.body.appendChild(ov);
   const form = ov.querySelector('form');
-  const input = form.elements.seconds;
   const errorBox = ov.querySelector('.execute-file-error');
   const applyButton = ov.querySelector('[data-dialog-apply]');
   let applying = false;
@@ -1089,35 +1121,29 @@ function openSessionSleepDialog(obj) {
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (applying) return;
-    const parsed = SessionReconnect.parseSeconds(input.value);
-    if (parsed.error) {
-      errorBox.textContent = parsed.error;
-      input.focus();
+    const interval = Number.parseInt(form.elements.interval.value, 10);
+    const jitter = Number.parseInt(form.elements.jitter.value, 10);
+    if (!Number.isInteger(interval) || interval < 1 || interval > 604800 || !Number.isInteger(jitter) || jitter < 0 || jitter > 604800) {
+      errorBox.textContent = '间隔必须为 1 秒到 7 天，抖动必须为 0 秒到 7 天。';
       return;
     }
-    errorBox.textContent = '';
-    const confirmed = await uiConfirm(
-      `确定将“${obj.hostname || obj.name || obj.id}”的断线重连间隔设置为 ${parsed.seconds} 秒吗？\n此操作不会暂停当前在线连接。`,
-      { title: '确认 Sleep / 重连间隔', okLabel: '应用' },
-    );
-    if (!confirmed || !document.body.contains(ov)) return;
     applying = true;
     applyButton.disabled = true;
     applyButton.textContent = '正在应用...';
-    const error = await App().ReconfigureSessionReconnect(obj.id, parsed.seconds).then(() => null).catch(value => value);
+    const error = await App().ReconfigureBeacon(obj.id, interval, jitter).then(() => null).catch(value => value);
     applying = false;
     if (error) {
-      const info = rpcError(error, '设置重连间隔失败');
+      const info = rpcError(error, '设置信标回连计划失败');
       errorBox.textContent = info.detail ? `${info.message}：${info.detail}` : info.message;
       applyButton.disabled = false;
       applyButton.textContent = '应用';
       return;
     }
     close();
-    toast('ok', `已将断线重连间隔设置为 ${parsed.seconds} 秒`);
+    toast('ok', `已排队：回连间隔 ${interval} 秒，抖动 ${jitter} 秒`);
   });
-  input.focus();
-  input.select();
+  form.elements.interval.focus();
+  form.elements.interval.select();
 }
 
 async function openSpawnDialog(obj) {
@@ -4297,11 +4323,15 @@ function openListenersPanel() {
 async function wireListeners() {
   const startBtn = document.getElementById('ls-start'); if (!startBtn) return;
   const typeEl = document.getElementById('ls-type'), fields = document.getElementById('ls-fields');
+  const httpProfiles = await App().ListHTTPC2Profiles().catch(() => []);
+  const httpProfileSummary = httpProfiles.length
+    ? httpProfiles.map(profile => profile.name).join('、')
+    : '未读取到档案（HTTP 植入体通常需要 default 档案）';
   const renderFields = () => {
     const type = typeEl.value, defaults={mtls:8888,http:80,https:443,dns:53,wg:51820};
     if (type==='dns') fields.innerHTML=`<div class="field-row"><label>域名</label><input id="ls-domains" placeholder="c2.example.com, alt.example.com"/></div><div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>端口</label><input id="ls-port" type="number" value="53"/></div><label class="check-label"><input id="ls-otp" type="checkbox"/> 强制 OTP</label><label class="check-label"><input id="ls-canaries" type="checkbox"/> 启用 Canary</label>`;
     else if(type==='wg') fields.innerHTML=`<div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>UDP 端口</label><input id="ls-port" type="number" value="51820"/></div><div class="field-row"><label>隧道 IP</label><input id="ls-tun" value="100.64.0.1"/></div><div class="field-row"><label>TCP 通信端口</label><input id="ls-nport" type="number" value="8888"/></div><div class="field-row"><label>密钥交换端口</label><input id="ls-keyport" type="number" value="1337"/></div>`;
-    else fields.innerHTML=`<div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>端口</label><input id="ls-port" type="number" value="${defaults[type]}"/></div>${type==='http'||type==='https'?`<div class="field-row"><label>公开域名</label><input id="ls-domain" placeholder="可选"/></div><div class="field-row"><label>网站</label><input id="ls-website" placeholder="可选"/></div><div class="field-row"><label>长轮询超时 / 抖动</label><div class="inline-pair"><input id="ls-poll" type="number" min="0" value="0"/><input id="ls-jitter" type="number" min="0" value="0"/></div></div><label class="check-label"><input id="ls-otp" type="checkbox"/> 强制 OTP</label>${type==='https'?'<label class="check-label"><input id="ls-acme" type="checkbox"/> 使用 ACME</label><label class="check-label"><input id="ls-jarm" type="checkbox"/> 随机化 JARM</label>':''}`:''}`;
+    else fields.innerHTML=`<div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>端口</label><input id="ls-port" type="number" value="${defaults[type]}"/></div>${type==='http'||type==='https'?`<div class="field-row"><label>HTTP C2 档案</label><select disabled title="监听器自动加载 Teamserver 上的全部 HTTP C2 档案"><option>全部档案（按植入体自动匹配）</option></select></div><div class="field-note">当前可用：${esc(httpProfileSummary)}。Sliver 监听器 RPC 不接受单档案参数；植入体携带档案名称，监听器会自动匹配。</div><div class="field-row"><label>公开域名</label><input id="ls-domain" placeholder="可选"/></div><div class="field-row"><label>网站</label><input id="ls-website" placeholder="可选"/></div><div class="field-row"><label>长轮询超时 / 抖动</label><div class="inline-pair"><input id="ls-poll" type="number" min="0" value="0"/><input id="ls-jitter" type="number" min="0" value="0"/></div></div><label class="check-label"><input id="ls-otp" type="checkbox"/> 强制 OTP</label>${type==='https'?'<label class="check-label"><input id="ls-acme" type="checkbox"/> 使用 ACME</label><label class="check-label"><input id="ls-jarm" type="checkbox"/> 随机化 JARM</label>':''}`:''}`;
   };
   typeEl.addEventListener('change', renderFields); renderFields();
   startBtn.addEventListener('click', async () => {
@@ -4422,7 +4452,7 @@ function openGeneratePanel() {
       } else {
         taskStore.update(generationTask.id, { status: 'success', summary: `已创建构建：${r.name || r.file || '未命名构建'}` });
         res.style.color = 'var(--ok)';
-        res.innerHTML = `<span>[成功] 已创建构建：${esc(r.name || r.file)}</span> <button class="btn small" style="margin-left:10px" onclick="buildRegen('${esc(r.name || r.file)}')">⬇ 保存到磁盘</button>`;
+        res.innerHTML = `<span>[成功] 已创建构建：${esc(r.file || r.name)}</span> <button class="btn small" style="margin-left:10px" onclick="buildRegen('${esc(r.name)}')">保存到磁盘</button>`;
         refreshBuildsList();
         // Auto-trigger the native save dialog immediately
         buildRegen(r.name || r.file);

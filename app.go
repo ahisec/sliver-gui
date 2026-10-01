@@ -360,6 +360,19 @@ func (a *App) RenameSession(sessionID, newName string) error {
 	return client.RenameSession(a.ctx, sessionID, newName)
 }
 
+func (a *App) RenameBeacon(beaconID, newName string) error {
+	client, err := a.requireClient()
+	if err != nil {
+		return err
+	}
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return errors.New("beacon name is required")
+	}
+	_, err = client.RPC.Rename(a.ctx, &clientpb.RenameReq{BeaconID: beaconID, Name: newName})
+	return err
+}
+
 func (a *App) KillSession(sessionID string) error {
 	client, err := a.requireClient()
 	if err != nil {
@@ -1671,6 +1684,13 @@ func (a *App) Chtimes(sessionID, path string, atime, mtime int64) error {
 	if resp.Response != nil && resp.Response.Err != "" {
 		return errors.New(resp.Response.Err)
 	}
+	properties := a.FileBrowserProperties(sessionID, path)
+	if properties.Error != "" {
+		return fmt.Errorf("timestamp request completed but verification failed: %s", properties.Error)
+	}
+	if properties.ModTime != mtime {
+		return fmt.Errorf("timestamp was not applied: expected modification time %d, got %d", mtime, properties.ModTime)
+	}
 	return nil
 }
 
@@ -1790,51 +1810,6 @@ func (a *App) ReconfigureBeacon(beaconID string, interval, jitter int64) error {
 	return err
 }
 
-const maxSessionReconnectSeconds int64 = 7 * 24 * 60 * 60
-
-func sessionReconnectRequest(sessionID string, intervalSeconds int64) (*sliverpb.ReconfigureReq, error) {
-	if strings.TrimSpace(sessionID) == "" {
-		return nil, errors.New("session ID is required")
-	}
-	if intervalSeconds < 1 || intervalSeconds > maxSessionReconnectSeconds {
-		return nil, fmt.Errorf("reconnect interval must be between 1 and %d seconds", maxSessionReconnectSeconds)
-	}
-	return &sliverpb.ReconfigureReq{
-		ReconnectInterval: intervalSeconds * int64(time.Second),
-		Request:           &commonpb.Request{SessionID: sessionID},
-	}, nil
-}
-
-// ReconfigureSessionReconnect changes how long a Session waits before
-// reconnecting after its current transport connection is lost.
-func (a *App) ReconfigureSessionReconnect(sessionID string, intervalSeconds int64) error {
-	req, err := sessionReconnectRequest(sessionID, intervalSeconds)
-	if err != nil {
-		return err
-	}
-	client, err := a.requireClient()
-	if err != nil {
-		return err
-	}
-	resp, err := client.RPC.Reconfigure(a.ctx, req)
-	if err != nil {
-		a.logDestructive("session-reconnect-interval", sessionID, err)
-		return err
-	}
-	if resp == nil {
-		err = errors.New("teamserver returned an empty reconfigure response")
-		a.logDestructive("session-reconnect-interval", sessionID, err)
-		return err
-	}
-	if resp.Response != nil && resp.Response.Err != "" {
-		err = errors.New(resp.Response.Err)
-		a.logDestructive("session-reconnect-interval", sessionID, err)
-		return err
-	}
-	a.logDestructive("session-reconnect-interval", sessionID, nil)
-	return nil
-}
-
 // InteractiveBeacon asks a beacon to open an interactive session on next check-in.
 func (a *App) InteractiveBeacon(beaconID string) error {
 	client, err := a.requireClient()
@@ -1866,6 +1841,11 @@ func (a *App) RegenerateBuild(name string) TransferResult {
 	if defaultName == "" {
 		defaultName = name
 	}
+	if builds, buildErr := client.RPC.ImplantBuilds(a.ctx, &commonpb.Empty{}); buildErr == nil {
+		if cfg := builds.Configs[name]; cfg != nil {
+			defaultName = implantDownloadFilename(defaultName, cfg.GOOS, formatToString(cfg.Format), cfg.Extension)
+		}
+	}
 	savePath, err := a.safeSaveFileDialog(runtime.SaveDialogOptions{
 		DefaultFilename: defaultName,
 		Title:           "Save regenerated implant",
@@ -1877,6 +1857,39 @@ func (a *App) RegenerateBuild(name string) TransferResult {
 		return TransferResult{Error: err.Error()}
 	}
 	return TransferResult{Path: savePath, Bytes: int64(len(resp.File.Data))}
+}
+
+func implantDownloadFilename(name, goos, format, configuredExtension string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "implant"
+	}
+	if filepath.Ext(name) != "" {
+		return name
+	}
+	extension := strings.TrimPrefix(strings.TrimSpace(configuredExtension), ".")
+	if extension == "" {
+		switch strings.ToLower(format) {
+		case "shared":
+			if strings.EqualFold(goos, "windows") {
+				extension = "dll"
+			} else if strings.EqualFold(goos, "darwin") {
+				extension = "dylib"
+			} else {
+				extension = "so"
+			}
+		case "shellcode":
+			extension = "bin"
+		case "exe", "executable", "service":
+			if strings.EqualFold(goos, "windows") {
+				extension = "exe"
+			}
+		}
+	}
+	if extension == "" {
+		return name
+	}
+	return name + "." + extension
 }
 
 type HostView struct {
@@ -2750,7 +2763,7 @@ func (a *App) GenerateImplant(req GenerateRequest) GenerateResult {
 	// calls RegenerateBuild(name) on a user click — a dialog raised by a direct
 	// gesture gets focus, and the spinner is already gone.
 	a.audit.log("generate", genReq.Name, fmt.Sprintf("%s/%s", req.GOOS, req.GOARCH))
-	return GenerateResult{Name: genReq.Name, File: genReq.Name}
+	return GenerateResult{Name: genReq.Name, File: implantDownloadFilename(genReq.Name, req.GOOS, req.Format, req.Extension)}
 }
 
 // randSuffix returns 8 random hex chars, used to make auto-generated implant

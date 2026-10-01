@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { fileActions, processActions, sessionHostActions } = require('../dist/context-menu-actions.js');
+const { fileActions, processActions, sessionHostActions, beaconHostActions } = require('../dist/context-menu-actions.js');
 
 test('file context actions expose timestamps without the removed properties entry', () => {
   const file = fileActions(false).filter(item => item.action).map(item => item.action);
@@ -18,14 +18,23 @@ test('process context actions contain all row operations and mark termination da
   assert.equal(actions.find(item => item.action === 'kill').danger, true);
 });
 
-test('Session host actions include Sleep while preserving Windows-only actions', () => {
+test('Session host actions omit misleading Sleep while preserving Windows-only actions', () => {
   const windows = sessionHostActions(true).map(item => item.action);
   const linux = sessionHostActions(false).map(item => item.action);
 
-  assert.equal(windows.includes('sleep'), true);
-  assert.equal(linux.includes('sleep'), true);
+  assert.equal(windows.includes('sleep'), false);
+  assert.equal(linux.includes('sleep'), false);
   assert.equal(windows.includes('screenshot'), true);
   assert.equal(windows.includes('integrity'), true);
   assert.equal(linux.includes('screenshot'), false);
   assert.equal(linux.includes('integrity'), false);
+});
+
+test('Beacon host actions expose asynchronous capabilities only', () => {
+  const windows = beaconHostActions(true).map(item => item.action);
+  const linux = beaconHostActions(false).map(item => item.action);
+  assert.deepEqual(windows, ['interactive-session', 'beacon-timing', 'beacon-tasks', 'integrity']);
+  assert.deepEqual(linux, ['interactive-session', 'beacon-timing', 'beacon-tasks']);
+  assert.equal(windows.includes('files'), false);
+  assert.equal(windows.includes('processes'), false);
 });

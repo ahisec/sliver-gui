@@ -335,3 +335,22 @@ func TestTransferLifecycle(t *testing.T) {
 		t.Fatal("completed transfer should not remain registered")
 	}
 }
+
+func TestImplantDownloadFilenameUsesPlatformFormatExtension(t *testing.T) {
+	tests := []struct {
+		name, goos, format, configured, want string
+	}{
+		{name: "win-agent", goos: "windows", format: "exe", want: "win-agent.exe"},
+		{name: "win-service", goos: "windows", format: "service", want: "win-service.exe"},
+		{name: "win-lib", goos: "windows", format: "shared", want: "win-lib.dll"},
+		{name: "payload", goos: "windows", format: "shellcode", want: "payload.bin"},
+		{name: "custom", goos: "windows", format: "exe", configured: ".dat", want: "custom.dat"},
+		{name: "ready.exe", goos: "windows", format: "exe", want: "ready.exe"},
+		{name: "linux-agent", goos: "linux", format: "exe", want: "linux-agent"},
+	}
+	for _, tt := range tests {
+		if got := implantDownloadFilename(tt.name, tt.goos, tt.format, tt.configured); got != tt.want {
+			t.Errorf("implantDownloadFilename(%q, %q, %q, %q) = %q, want %q", tt.name, tt.goos, tt.format, tt.configured, got, tt.want)
+		}
+	}
+}

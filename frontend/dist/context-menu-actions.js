@@ -28,7 +28,6 @@
   function sessionHostActions(isWindows) {
     const actions = [
       { action: 'spawn', label: '生成新会话' },
-      { action: 'sleep', label: 'Sleep / 重连间隔' },
     ];
     if (isWindows) actions.push({ action: 'screenshot', label: '截取屏幕' });
     actions.push(
@@ -40,5 +39,15 @@
     return actions;
   }
 
-  return { fileActions, processActions, sessionHostActions };
+  function beaconHostActions(isWindows) {
+    const actions = [
+      { action: 'interactive-session', label: '转为实时会话' },
+      { action: 'beacon-timing', label: '回连间隔 / 抖动' },
+      { action: 'beacon-tasks', label: '查看任务' },
+    ];
+    if (isWindows) actions.push({ action: 'integrity', label: '检查完整性级别' });
+    return actions;
+  }
+
+  return { fileActions, processActions, sessionHostActions, beaconHostActions };
 });
