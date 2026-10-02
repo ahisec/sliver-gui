@@ -14,3 +14,9 @@ test('directory downloads declare recursive intent', () => {
   assert.equal(source.includes('{ isDirectory: file.isDir }'), true);
   assert.equal(source.includes('DownloadPathTracked(transferID, sessionID, remotePath, Boolean(options.isDirectory))'), true);
 });
+
+test('infrastructure snapshot has a UI timeout instead of spinning forever', () => {
+  assert.equal(source.includes('Promise.race(['), true);
+  assert.equal(source.includes("new Error('网络基础设施汇总超过 8 秒')"), true);
+  assert.equal(source.includes('正在汇总 Pivot 与活动转发（最多等待 8 秒）'), true);
+});

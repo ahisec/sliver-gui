@@ -2711,12 +2711,21 @@ function endpointParts(value) {
 }
 
 async function openInfrastructurePanel() {
-  openViewPanel('_infrastructure', '网络基础设施', '<div class="infra-loading"><span class="spinner"></span>正在汇总 Pivot 与活动转发...</div>');
+  openViewPanel('_infrastructure', '网络基础设施', '<div class="infra-loading"><span class="spinner"></span>正在汇总 Pivot 与活动转发（最多等待 8 秒）...</div>');
   let snapshot;
-  try { snapshot = await App().GetInfrastructureSnapshot(); }
+  let timeoutID;
+  try {
+    snapshot = await Promise.race([
+      App().GetInfrastructureSnapshot(),
+      new Promise((_, reject) => { timeoutID = setTimeout(() => reject(new Error('网络基础设施汇总超过 8 秒')), 8000); }),
+    ]);
+  }
   catch (error) {
-    document.getElementById('modal-body').innerHTML = rpcErrorHtml(error, '加载基础设施失败');
+    const body = document.getElementById('modal-body');
+    if (body) body.innerHTML = `${rpcErrorHtml(error, '加载基础设施失败')}<div class="ui-dialog-actions"><button class="btn small accent" onclick="openInfrastructurePanel()">重试</button></div>`;
     return;
+  } finally {
+    clearTimeout(timeoutID);
   }
   renderInfrastructurePanel(snapshot || { nodes: [], routes: [], warnings: [] });
 }

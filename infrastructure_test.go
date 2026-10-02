@@ -1,10 +1,46 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"reflect"
 	"testing"
+	"time"
 )
+
+func TestRunInfrastructureQueryTimesOut(t *testing.T) {
+	started := time.Now()
+	value, err := runInfrastructureQuery(25*time.Millisecond, func() (string, error) {
+		time.Sleep(150 * time.Millisecond)
+		return "late", nil
+	})
+	if err == nil || value != "" {
+		t.Fatalf("slow query = %q, %v; want zero value and timeout", value, err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("timeout returned too slowly: %s", elapsed)
+	}
+}
+
+func TestRunInfrastructureQueryPreservesResult(t *testing.T) {
+	value, err := runInfrastructureQuery(time.Second, func() (string, error) { return "ready", nil })
+	if err != nil || value != "ready" {
+		t.Fatalf("query = %q, %v", value, err)
+	}
+	wantErr := errors.New("unsupported")
+	if _, err := runInfrastructureQuery(time.Second, func() (string, error) { return "", wantErr }); !errors.Is(err, wantErr) {
+		t.Fatalf("query error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestShouldQueryWireGuard(t *testing.T) {
+	if shouldQueryWireGuard(SessionView{Transport: "mtls"}) {
+		t.Fatal("mTLS session must not trigger WireGuard status RPCs")
+	}
+	if !shouldQueryWireGuard(SessionView{Transport: "wireguard"}) || !shouldQueryWireGuard(SessionView{Transport: "wg"}) {
+		t.Fatal("WireGuard sessions must query WireGuard status")
+	}
+}
 
 func TestFlattenPivotGraph(t *testing.T) {
 	nodes := []PivotNodeView{{SessionID: "root", Children: []PivotNodeView{{SessionID: "child", Children: []PivotNodeView{{SessionID: "leaf"}}}}}}

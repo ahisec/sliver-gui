@@ -77,7 +77,7 @@
 | `GetExtensionCenterSnapshot` | Sliver RPC/客户端封装 | `extension_center.go:118` | `() ExtensionCenterSnapshot` |
 | `GetHTTPC2Profile` | Sliver RPC/客户端封装 | `features.go:544` | `(name string) (string, error)` |
 | `GetIOCs` | 客户端本地辅助 | `panels.go:737` | `() []IOCEntry` |
-| `GetInfrastructureSnapshot` | Sliver RPC/客户端封装 | `infrastructure.go:90` | `() (InfrastructureSnapshot, error)` |
+| `GetInfrastructureSnapshot` | Sliver RPC/客户端封装 | `infrastructure.go:145` | `() (InfrastructureSnapshot, error)` |
 | `GetKillChain` | 客户端本地辅助 | `panels.go:611` | `() KillChainState` |
 | `GetLoot` | Sliver RPC/客户端封装 | `app.go:2187` | `() ([]LootView, error)` |
 | `GetMCPStatus` | Sliver RPC/客户端封装 | `mcp.go:90` | `() MCPStatusView` |
@@ -148,7 +148,7 @@
 | `PingSession` | Sliver RPC/客户端封装 | `features.go:736` | `(sessionID string) error` |
 | `PollBeaconIntegrityProbe` | Sliver RPC/客户端封装 | `app.go:1028` | `(beaconID, taskID string) IntegrityProbeResult` |
 | `PreflightImplant` | Sliver RPC/客户端封装 | `implant_studio.go:216` | `(req GenerateRequest) (ImplantPreflight, error)` |
-| `PreflightNetworkRoute` | Sliver RPC/客户端封装 | `infrastructure.go:237` | `(kind, listen, target string) NetworkPreflight` |
+| `PreflightNetworkRoute` | Sliver RPC/客户端封装 | `infrastructure.go:365` | `(kind, listen, target string) NetworkPreflight` |
 | `PrintWorkingDir` | Sliver RPC/客户端封装 | `app.go:874` | `(sessionID string) (string, error)` |
 | `ProcessBrowserKill` | 客户端本地辅助 | `panels.go:396` | `(sessionID string, pid int32) error` |
 | `ProcessBrowserList` | 客户端本地辅助 | `panels.go:373` | `(sessionID string) ProcessBrowserResult` |

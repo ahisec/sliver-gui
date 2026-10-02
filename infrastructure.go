@@ -1,11 +1,18 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+)
+
+const (
+	infrastructureQueryTimeout    = 3 * time.Second
+	infrastructureSnapshotTimeout = 6 * time.Second
 )
 
 type InfrastructureNode struct {
@@ -40,6 +47,54 @@ type NetworkPreflight struct {
 	Valid    bool     `json:"valid"`
 	Errors   []string `json:"errors"`
 	Warnings []string `json:"warnings"`
+}
+
+type infrastructureQueryResult struct {
+	routes  []InfrastructureRoute
+	warning string
+}
+
+func runInfrastructureQuery[T any](timeout time.Duration, query func() (T, error)) (T, error) {
+	type result struct {
+		value T
+		err   error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		value, err := query()
+		resultCh <- result{value: value, err: err}
+	}()
+	if timeout <= 0 {
+		var zero T
+		return zero, errors.New("query deadline exceeded")
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-resultCh:
+		return result.value, result.err
+	case <-timer.C:
+		var zero T
+		return zero, fmt.Errorf("query timed out after %s", timeout.Round(time.Millisecond))
+	}
+}
+
+func infrastructureSessionName(session SessionView) string {
+	if name := strings.TrimSpace(session.Name); name != "" {
+		return name
+	}
+	if hostname := strings.TrimSpace(session.Hostname); hostname != "" {
+		return hostname
+	}
+	if len(session.ID) > 8 {
+		return session.ID[:8]
+	}
+	return session.ID
+}
+
+func shouldQueryWireGuard(session SessionView) bool {
+	transport := strings.ToLower(session.Transport)
+	return strings.Contains(transport, "wireguard") || transport == "wg"
 }
 
 func flattenPivotGraph(nodes []PivotNodeView) (map[string]string, map[string][]string) {
@@ -88,11 +143,49 @@ func flattenPivotGraph(nodes []PivotNodeView) (map[string]string, map[string][]s
 // relays. Unsupported per-session RPCs become warnings so one older implant
 // cannot hide the rest of the infrastructure view.
 func (a *App) GetInfrastructureSnapshot() (InfrastructureSnapshot, error) {
-	sessions, err := a.ListSessions()
-	if err != nil {
-		return InfrastructureSnapshot{}, err
+	deadline := time.Now().Add(infrastructureSnapshotTimeout)
+	type baseResult struct {
+		kind     string
+		sessions []SessionView
+		graph    []PivotNodeView
+		err      error
 	}
-	graph, graphErr := a.GetPivotGraph()
+	baseCh := make(chan baseResult, 2)
+	go func() {
+		sessions, err := runInfrastructureQuery(infrastructureQueryTimeout, a.ListSessions)
+		baseCh <- baseResult{kind: "sessions", sessions: sessions, err: err}
+	}()
+	go func() {
+		graph, err := runInfrastructureQuery(infrastructureQueryTimeout, a.GetPivotGraph)
+		baseCh <- baseResult{kind: "graph", graph: graph, err: err}
+	}()
+
+	var sessions []SessionView
+	var graph []PivotNodeView
+	var graphErr error
+	for range 2 {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return InfrastructureSnapshot{}, errors.New("infrastructure snapshot timed out while loading sessions")
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case base := <-baseCh:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			if base.kind == "sessions" {
+				if base.err != nil {
+					return InfrastructureSnapshot{}, fmt.Errorf("list sessions: %w", base.err)
+				}
+				sessions = base.sessions
+			} else {
+				graph, graphErr = base.graph, base.err
+			}
+		case <-timer.C:
+			return InfrastructureSnapshot{}, errors.New("infrastructure snapshot timed out while loading sessions")
+		}
+	}
 	parents, downstream := flattenPivotGraph(graph)
 	result := InfrastructureSnapshot{}
 	if graphErr != nil {
@@ -100,31 +193,20 @@ func (a *App) GetInfrastructureSnapshot() (InfrastructureSnapshot, error) {
 	}
 
 	for _, session := range sessions {
+		sessionName := infrastructureSessionName(session)
 		status := "online"
 		if session.IsDead {
 			status = "offline"
 		}
 		result.Nodes = append(result.Nodes, InfrastructureNode{
-			ID: session.ID, Name: session.Name, Kind: "session", Address: session.RemoteAddr,
+			ID: session.ID, Name: sessionName, Kind: "session", Address: session.RemoteAddr,
 			Transport: session.Transport, Status: status, ParentID: parents[session.ID],
 			Downstream: downstream[session.ID],
 		})
 
-		pivots, pivotErr := a.ListPivots(session.ID)
-		if pivotErr != nil {
-			result.Warnings = append(result.Warnings, session.Name+": Pivot 状态不可用")
-		}
-		for _, pivot := range pivots {
-			result.Routes = append(result.Routes, InfrastructureRoute{
-				ID: pivot.ID, SessionID: session.ID, Session: session.Name,
-				Type: "pivot-" + strings.ToLower(pivot.Type), Listen: pivot.BindAddress,
-				Status: status, Source: "teamserver",
-			})
-		}
-
 		if port := a.SocksProxyStatus(session.ID); port > 0 {
 			result.Routes = append(result.Routes, InfrastructureRoute{
-				ID: strconv.Itoa(port), SessionID: session.ID, Session: session.Name,
+				ID: strconv.Itoa(port), SessionID: session.ID, Session: sessionName,
 				Type: "socks", Listen: fmt.Sprintf("127.0.0.1:%d", port), Status: status, Source: "client",
 			})
 		}
@@ -134,45 +216,91 @@ func (a *App) GetInfrastructureSnapshot() (InfrastructureSnapshot, error) {
 		}
 		for _, forward := range portForwards {
 			result.Routes = append(result.Routes, InfrastructureRoute{
-				ID: strconv.Itoa(forward.LocalPort), SessionID: session.ID, Session: session.Name,
+				ID: strconv.Itoa(forward.LocalPort), SessionID: session.ID, Session: sessionName,
 				Type: "forward", Listen: fmt.Sprintf("127.0.0.1:%d", forward.LocalPort),
 				Target: forward.Remote, Status: status, Source: "client",
 			})
 		}
 
-		rports, rportErr := a.ListRportFwds(session.ID)
-		if rportErr != nil {
-			result.Warnings = append(result.Warnings, session.Name+": 反向转发状态不可用")
-		}
-		for _, forward := range rports {
-			result.Routes = append(result.Routes, InfrastructureRoute{
-				ID: strconv.FormatUint(uint64(forward.ID), 10), SessionID: session.ID, Session: session.Name,
-				Type: "reverse-forward", Listen: forward.Bind, Target: forward.Forward,
-				Status: status, Source: "teamserver",
-			})
-		}
+	}
 
-		wgForwards, wgForwardErr := a.ListWGForwarders(session.ID)
-		if wgForwardErr != nil {
-			result.Warnings = append(result.Warnings, session.Name+": WireGuard 转发状态不可用")
+	queryCh := make(chan infrastructureQueryResult, len(sessions)*4)
+	queryCount := 0
+	launch := func(session SessionView, label string, query func() ([]InfrastructureRoute, error)) {
+		queryCount++
+		go func() {
+			timeout := min(infrastructureQueryTimeout, time.Until(deadline))
+			routes, err := runInfrastructureQuery(timeout, query)
+			result := infrastructureQueryResult{routes: routes}
+			if err != nil {
+				result.warning = infrastructureSessionName(session) + ": " + label + "状态查询超时或不可用"
+			}
+			queryCh <- result
+		}()
+	}
+	for _, session := range sessions {
+		if session.IsDead {
+			continue
 		}
-		for _, forward := range wgForwards {
-			result.Routes = append(result.Routes, InfrastructureRoute{
-				ID: strconv.Itoa(int(forward.ID)), SessionID: session.ID, Session: session.Name,
-				Type: "wireguard-forward", Listen: forward.LocalAddr, Target: forward.RemoteAddr,
-				Status: status, Source: "teamserver",
+		session := session
+		name := infrastructureSessionName(session)
+		launch(session, "Pivot ", func() ([]InfrastructureRoute, error) {
+			items, err := a.ListPivots(session.ID)
+			routes := make([]InfrastructureRoute, 0, len(items))
+			for _, item := range items {
+				routes = append(routes, InfrastructureRoute{ID: item.ID, SessionID: session.ID, Session: name, Type: "pivot-" + strings.ToLower(item.Type), Listen: item.BindAddress, Status: "online", Source: "teamserver"})
+			}
+			return routes, err
+		})
+		launch(session, "反向转发", func() ([]InfrastructureRoute, error) {
+			items, err := a.ListRportFwds(session.ID)
+			routes := make([]InfrastructureRoute, 0, len(items))
+			for _, item := range items {
+				routes = append(routes, InfrastructureRoute{ID: strconv.FormatUint(uint64(item.ID), 10), SessionID: session.ID, Session: name, Type: "reverse-forward", Listen: item.Bind, Target: item.Forward, Status: "online", Source: "teamserver"})
+			}
+			return routes, err
+		})
+		if shouldQueryWireGuard(session) {
+			launch(session, "WireGuard 转发", func() ([]InfrastructureRoute, error) {
+				items, err := a.ListWGForwarders(session.ID)
+				routes := make([]InfrastructureRoute, 0, len(items))
+				for _, item := range items {
+					routes = append(routes, InfrastructureRoute{ID: strconv.Itoa(int(item.ID)), SessionID: session.ID, Session: name, Type: "wireguard-forward", Listen: item.LocalAddr, Target: item.RemoteAddr, Status: "online", Source: "teamserver"})
+				}
+				return routes, err
+			})
+			launch(session, "WireGuard SOCKS ", func() ([]InfrastructureRoute, error) {
+				items, err := a.ListWGSocks(session.ID)
+				routes := make([]InfrastructureRoute, 0, len(items))
+				for _, item := range items {
+					routes = append(routes, InfrastructureRoute{ID: strconv.Itoa(int(item.ID)), SessionID: session.ID, Session: name, Type: "wireguard-socks", Listen: item.LocalAddr, Status: "online", Source: "teamserver"})
+				}
+				return routes, err
 			})
 		}
-
-		wgSocks, wgSocksErr := a.ListWGSocks(session.ID)
-		if wgSocksErr != nil {
-			result.Warnings = append(result.Warnings, session.Name+": WireGuard SOCKS 状态不可用")
+	}
+	for range queryCount {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			result.Warnings = append(result.Warnings, "部分活动转发查询超过 6 秒，已显示当前可用结果")
+			break
 		}
-		for _, socks := range wgSocks {
-			result.Routes = append(result.Routes, InfrastructureRoute{
-				ID: strconv.Itoa(int(socks.ID)), SessionID: session.ID, Session: session.Name,
-				Type: "wireguard-socks", Listen: socks.LocalAddr, Status: status, Source: "teamserver",
-			})
+		timer := time.NewTimer(remaining)
+		select {
+		case query := <-queryCh:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			result.Routes = append(result.Routes, query.routes...)
+			if query.warning != "" {
+				result.Warnings = append(result.Warnings, query.warning)
+			}
+		case <-timer.C:
+			result.Warnings = append(result.Warnings, "部分活动转发查询超过 6 秒，已显示当前可用结果")
+			queryCount = 0
+		}
+		if queryCount == 0 {
+			break
 		}
 	}
 
