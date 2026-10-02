@@ -983,6 +983,13 @@ type IntegrityProbeResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+type BeaconPrivsTaskResult struct {
+	TaskID string      `json:"taskId,omitempty"`
+	Status string      `json:"status"`
+	Privs  PrivsResult `json:"privs"`
+	Error  string      `json:"error,omitempty"`
+}
+
 func (a *App) GetPrivs(sessionID string) (PrivsResult, error) {
 	client, err := a.requireClient()
 	if err != nil {
@@ -994,11 +1001,7 @@ func (a *App) GetPrivs(sessionID string) (PrivsResult, error) {
 	if err != nil {
 		return PrivsResult{}, err
 	}
-	out := PrivsResult{Integrity: resp.ProcessIntegrity, ProcessName: resp.ProcessName}
-	for _, p := range resp.PrivInfo {
-		out.Privs = append(out.Privs, PrivEntry{Name: p.Name, Description: p.Description, Enabled: p.Enabled})
-	}
-	return out, nil
+	return privsResultFromResponse(resp), nil
 }
 
 // StartBeaconIntegrityProbe queues getprivs for a Windows Beacon without
@@ -1021,6 +1024,56 @@ func (a *App) StartBeaconIntegrityProbe(beaconID string) IntegrityProbeResult {
 		return IntegrityProbeResult{Status: "completed", Integrity: resp.ProcessIntegrity}
 	}
 	return IntegrityProbeResult{Status: "error", Error: "Teamserver 未返回 Beacon 完整性任务 ID"}
+}
+
+// StartBeaconGetPrivs queues the native Sliver GetPrivs RPC for a Beacon. It
+// must not be routed through cmd.exe because getprivs is an implant command,
+// not an operating-system executable.
+func (a *App) StartBeaconGetPrivs(beaconID string) BeaconPrivsTaskResult {
+	client, err := a.requireClient()
+	if err != nil {
+		return BeaconPrivsTaskResult{Status: "error", Error: err.Error()}
+	}
+	resp, err := client.RPC.GetPrivs(a.ctx, &sliverpb.GetPrivsReq{
+		Request: &commonpb.Request{BeaconID: beaconID, Async: true},
+	})
+	if err != nil {
+		return BeaconPrivsTaskResult{Status: "error", Error: err.Error()}
+	}
+	if resp.Response != nil && resp.Response.TaskID != "" {
+		return BeaconPrivsTaskResult{TaskID: resp.Response.TaskID, Status: "pending"}
+	}
+	if resp.ProcessIntegrity != "" || len(resp.PrivInfo) > 0 {
+		return BeaconPrivsTaskResult{Status: "completed", Privs: privsResultFromResponse(resp)}
+	}
+	return BeaconPrivsTaskResult{Status: "error", Error: "Teamserver 未返回 Beacon 权限任务 ID"}
+}
+
+func (a *App) PollBeaconGetPrivs(taskID string) BeaconPrivsTaskResult {
+	client, err := a.requireClient()
+	if err != nil {
+		return BeaconPrivsTaskResult{TaskID: taskID, Status: "error", Error: err.Error()}
+	}
+	task, err := client.RPC.GetBeaconTaskContent(a.ctx, &clientpb.BeaconTask{ID: taskID})
+	if err != nil || task.State == "pending" || task.State == "sent" {
+		return BeaconPrivsTaskResult{TaskID: taskID, Status: "pending"}
+	}
+	if task.State != "completed" {
+		return BeaconPrivsTaskResult{TaskID: taskID, Status: "error", Error: "Beacon 权限任务" + task.State}
+	}
+	var privileges sliverpb.GetPrivs
+	if err := proto.Unmarshal(task.Response, &privileges); err != nil {
+		return BeaconPrivsTaskResult{TaskID: taskID, Status: "error", Error: "无法解析 Beacon 权限结果: " + err.Error()}
+	}
+	return BeaconPrivsTaskResult{TaskID: taskID, Status: "completed", Privs: privsResultFromResponse(&privileges)}
+}
+
+func privsResultFromResponse(resp *sliverpb.GetPrivs) PrivsResult {
+	out := PrivsResult{Integrity: resp.ProcessIntegrity, ProcessName: resp.ProcessName}
+	for _, privilege := range resp.PrivInfo {
+		out.Privs = append(out.Privs, PrivEntry{Name: privilege.Name, Description: privilege.Description, Enabled: privilege.Enabled})
+	}
+	return out
 }
 
 // PollBeaconIntegrityProbe resolves a queued getprivs task and mirrors the
@@ -3806,7 +3859,7 @@ func (a *App) pollBeaconTask(beaconID, taskID string) BeaconTaskResult {
 			if t.ID == taskID {
 				if t.State == "completed" {
 					// Try to unmarshal the response as an Execute response
-					stdout, stderr := parseExecuteResponse(t.Response)
+					stdout, stderr := parseExecuteResponse(t.Response, beaconOSForID(a.ctx, client, beaconID))
 					return BeaconTaskResult{
 						TaskID: taskID,
 						Status: "completed",
@@ -3835,17 +3888,30 @@ func (a *App) pollBeaconTask(beaconID, taskID string) BeaconTaskResult {
 
 // parseExecuteResponse tries to extract stdout/stderr from a serialized Execute
 // protobuf response. Falls back to raw string if parsing fails.
-func parseExecuteResponse(data []byte) (stdout, stderr string) {
+func parseExecuteResponse(data []byte, targetOS string) (stdout, stderr string) {
 	if len(data) == 0 {
 		return "(no output)", ""
 	}
 	// Try protobuf unmarshal using proto.Unmarshal
 	var execResp sliverpb.Execute
 	if err := proto.Unmarshal(data, &execResp); err == nil {
-		return string(execResp.Stdout), string(execResp.Stderr)
+		return decodeCommandOutput(execResp.Stdout, targetOS), decodeCommandOutput(execResp.Stderr, targetOS)
 	}
 	// Fallback: return raw bytes as string
-	return string(data), ""
+	return decodeCommandOutput(data, targetOS), ""
+}
+
+func beaconOSForID(ctx context.Context, client *sliverclient.Client, beaconID string) string {
+	beacons, err := client.RPC.GetBeacons(ctx, &commonpb.Empty{})
+	if err != nil || beacons == nil {
+		return ""
+	}
+	for _, beacon := range beacons.Beacons {
+		if beacon.ID == beaconID {
+			return beacon.OS
+		}
+	}
+	return ""
 }
 
 // ExecuteBeaconCommandAsync queues a command on a beacon and polls for the result
@@ -3903,8 +3969,8 @@ func (a *App) ExecuteBeaconCommandAsync(beaconID, command string) BeaconTaskResu
 	if resp.Stdout != nil || resp.Stderr != nil {
 		return BeaconTaskResult{
 			Status: "completed",
-			Stdout: string(resp.Stdout),
-			Stderr: string(resp.Stderr),
+			Stdout: decodeCommandOutput(resp.Stdout, beaconOS),
+			Stderr: decodeCommandOutput(resp.Stderr, beaconOS),
 		}
 	}
 
@@ -3943,7 +4009,7 @@ func (a *App) GetBeaconTasks(beaconID string) ([]BeaconTaskView, error) {
 		// Parse the response bytes into readable text
 		response := ""
 		if len(t.Response) > 0 && t.State == "completed" {
-			stdout, stderr := parseExecuteResponse(t.Response)
+			stdout, stderr := parseExecuteResponse(t.Response, beaconOSForID(a.ctx, client, beaconID))
 			response = stdout
 			if stderr != "" {
 				response += "\n[stderr] " + stderr
@@ -3983,7 +4049,7 @@ func (a *App) GetBeaconTaskResult(taskID string) (BeaconTaskView, error) {
 		v.CompletedAt = time.Unix(t.CompletedAt, 0).Format("15:04:05")
 	}
 	if len(t.Response) > 0 {
-		stdout, stderr := parseExecuteResponse(t.Response)
+		stdout, stderr := parseExecuteResponse(t.Response, beaconOSForID(a.ctx, client, t.BeaconID))
 		v.Response = stdout
 		if stderr != "" {
 			v.Response += "\n[stderr] " + stderr

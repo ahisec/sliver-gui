@@ -20,3 +20,11 @@ test('infrastructure snapshot has a UI timeout instead of spinning forever', () 
   assert.equal(source.includes("new Error('网络基础设施汇总超过 8 秒')"), true);
   assert.equal(source.includes('正在汇总 Pivot 与活动转发（最多等待 8 秒）'), true);
 });
+
+test('getprivs is routed before the generic Beacon shell fallback', () => {
+  const builtIn = source.indexOf("if (cmd === 'getprivs') return runGetPrivsCommand(kind, id, tab.obj);");
+  const beaconFallback = source.indexOf("if (kind === 'beacon') {");
+  assert.ok(builtIn >= 0 && beaconFallback >= 0 && builtIn < beaconFallback);
+  assert.equal(source.includes("case 'getprivs':"), false);
+  assert.equal(source.includes('StartBeaconGetPrivs(id)'), true);
+});

@@ -684,6 +684,7 @@ node --check frontend/dist/main.js
 40. [已完成] 按官方 RPC 能力扩展 Beacon 右键菜单，提供交互上线、回连配置、任务、异步完整性检查、重命名和记录删除；依赖实时 Session 的文件、进程、网络功能继续明确禁用。
 41. [已完成] 在 Session/Beacon 列表增加“一键清空离线”按钮，仅从当前客户端视图隐藏离线条目，不向目标发送终止命令、不删除 Teamserver Beacon 任务；相同 ID 再次在线时自动恢复显示。
 42. [已完成] 修复“网络基础设施”长时间停留在“正在汇总 Pivot 与活动转发”：Session 列表与 Pivot 图并发读取；离线 Session 跳过远程枚举；在线 Session 的 Pivot、反向转发及适用的 WireGuard 查询并发执行，单项最多 3 秒、后端快照最多 6 秒、前端最多 8 秒。已取得的本地 SOCKS/端口转发和远程路由优先显示，超时或不支持的 RPC 降级为局部警告，并增加慢请求与传输筛选回归测试。
+43. [已完成] 修复 Beacon 控制台将 Sliver 内建命令 `getprivs` 错误降级为 Windows shell 命令的问题：Session 继续同步调用官方 `GetPrivs` RPC，Beacon 使用异步 `GetPrivs` 任务并在后续回连中解码完整性、进程和权限列表；等待状态明确提示领取任务和返回结果可能分别需要一次签到。所有 Beacon 外壳任务的 Windows stdout/stderr 统一执行 UTF-8/GBK 解码，并增加命令路由、原生权限结果及乱码解码测试。
 
 上述队列已全部收口；“受上游限制”的项目是已核实并记录的产品边界，不是仍承诺由当前客户端单独实现的待办。
 

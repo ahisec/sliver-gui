@@ -1725,6 +1725,7 @@ async function dispatchCmd(kind, id, raw) {
   if (cmd === 'clear') { const o = document.getElementById(`cout-${id}`); if (o) o.innerHTML = ''; return; }
   if (cmd === 'info') { const o = tab.obj; return appendOut(id, `ID: ${o.id}\nHost: ${o.hostname}\nUser: ${o.username}\nOS: ${o.os}/${o.arch}\nPID: ${o.pid}\nTransport: ${o.transport}\nRemote: ${o.remoteAddress}`, 'info'); }
   if (cmd === 'tasks' && kind === 'beacon') return showTasks(id);
+  if (cmd === 'getprivs') return runGetPrivsCommand(kind, id, tab.obj);
   if ((cmd === 'shell' && (!args.length || args[0] === '-i')) || cmd === 'pty') {
     if (kind !== 'session') return appendOut(id, '[!] interactive shell requires a session (beacons are async). For a beacon use: shell <command>', 'err');
     return openInteractiveShell(id, tab.obj);
@@ -1762,8 +1763,8 @@ async function dispatchCmd(kind, id, raw) {
       return;
     }
     if (r.taskId) {
-      taskStore.update(localTask.id, { status: 'waiting', remoteTaskId: r.taskId, canCancel: true, summary: '已排队，等待信标回连' });
-      appendOut(id, `[*] task ${r.taskId.slice(0,8)} queued — polling for result...`, 'pending');
+      taskStore.update(localTask.id, { status: 'waiting', remoteTaskId: r.taskId, canCancel: true, summary: '已排队；领取任务和返回结果可能分别需要一次签到' });
+      appendOut(id, `[*] task ${r.taskId.slice(0,8)} 已排队；信标可能需要一次签到领取任务、再一次签到返回结果。`, 'pending');
       pollBeaconResult(id, r.taskId, localTask.id);
     } else {
       taskStore.update(localTask.id, { status: 'waiting', summary: '命令已排队，等待信标回连' });
@@ -2061,12 +2062,6 @@ async function dispatchCmd(kind, id, raw) {
       ifs.forEach(i => { out += `${i.name}${i.mac ? '  ('+i.mac+')' : ''}\n${(i.ips||[]).map(a => '    '+a).join('\n')}\n`; });
       return appendOut(id, out.trimEnd() || '(no interfaces)', 'out');
     }
-    case 'getprivs': {
-      const r = await App().GetPrivs(id);
-      let out = `Process: ${r.processName}   Integrity: ${r.integrity}\n\nPRIVILEGE                          ENABLED\n`;
-      (r.privs||[]).forEach(p => { out += `${(p.name||'').padEnd(35)}${p.enabled ? 'yes' : 'no'}\n`; });
-      return appendOut(id, out.trimEnd(), 'out');
-    }
     case 'procdump': {
       if (!args[0]) return appendOut(id, 'usage: procdump <pid>', 'err');
       appendOut(id, '[*] dumping process memory...', 'pending');
@@ -2307,6 +2302,58 @@ async function dispatchCmd(kind, id, raw) {
       return;
     }
   }
+}
+
+function formatPrivsResult(result) {
+  let output = `进程：${result?.processName || '-'}   完整性：${result?.integrity || '未知'}\n\n权限                               状态\n`;
+  (result?.privs || []).forEach(privilege => {
+    output += `${(privilege.name || '').padEnd(35)}${privilege.enabled ? '已启用' : '未启用'}\n`;
+  });
+  return output.trimEnd();
+}
+
+async function runGetPrivsCommand(kind, id, agent) {
+  if (kind === 'session') {
+    const result = await App().GetPrivs(id);
+    return appendOut(id, formatPrivsResult(result), 'out');
+  }
+  const target = agent?.hostname || id.slice(0, 8);
+  const localTask = taskStore.create({
+    type: 'beacon-getprivs', title: 'Beacon 权限检查', target, agentId: id,
+    status: 'queued', summary: '正在提交原生 GetPrivs 任务', timeoutMs: 12 * 60 * 1000,
+    policy: 'Beacon 异步任务可能需要一次签到领取任务、再一次签到返回结果。',
+  });
+  const result = await App().StartBeaconGetPrivs(id).catch(error => ({ status:'error', error:String(error) }));
+  if (result.status === 'error') {
+    const message = rpcErrorMessage(result.error, '提交 Beacon 权限检查失败');
+    taskStore.update(localTask.id, { status:'failed', summary:message, error:message });
+    return appendOut(id, `[error] ${message}`, 'err');
+  }
+  if (result.status === 'completed') {
+    taskStore.update(localTask.id, { status:'success', summary:'权限检查已完成' });
+    return appendOut(id, formatPrivsResult(result.privs), 'out');
+  }
+  taskStore.update(localTask.id, { status:'waiting', remoteTaskId:result.taskId, summary:'等待信标领取任务并返回权限结果' });
+  appendOut(id, `[*] 原生 GetPrivs 任务 ${result.taskId.slice(0,8)} 已排队；可能需要两次信标签到。`, 'pending');
+  pollBeaconGetPrivs(id, result.taskId, localTask.id);
+}
+
+function pollBeaconGetPrivs(id, taskId, localTaskId, tries = 0) {
+  if (tries > 240 || taskStore.get(localTaskId)?.status === 'cancelled') return;
+  setTimeout(async () => {
+    if (taskStore.get(localTaskId)?.status === 'cancelled') return;
+    const result = await App().PollBeaconGetPrivs(taskId).catch(error => ({ status:'error', error:String(error) }));
+    if (result.status === 'pending') return pollBeaconGetPrivs(id, taskId, localTaskId, tries + 1);
+    if (result.status === 'error') {
+      const message = rpcErrorMessage(result.error, 'Beacon 权限检查失败');
+      taskStore.update(localTaskId, { status:'failed', summary:message, error:message });
+      if (openTabs[id]) appendOut(id, `[error] ${message}`, 'err');
+      return;
+    }
+    taskStore.update(localTaskId, { status:'success', summary:'权限检查已完成' });
+    if (openTabs[id]) appendOut(id, formatPrivsResult(result.privs), 'out');
+    refreshAgents();
+  }, 3000);
 }
 
 // pollBeaconResult polls the beacon task queue until the given task completes,

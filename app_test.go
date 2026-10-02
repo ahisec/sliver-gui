@@ -169,7 +169,7 @@ func TestParseCSVLine(t *testing.T) {
 
 func TestParseExecuteResponse(t *testing.T) {
 	// Empty -> placeholder.
-	if out, _ := parseExecuteResponse(nil); out != "(no output)" {
+	if out, _ := parseExecuteResponse(nil, "windows"); out != "(no output)" {
 		t.Errorf("empty response = %q, want (no output)", out)
 	}
 	// Valid protobuf round-trips stdout/stderr.
@@ -180,9 +180,22 @@ func TestParseExecuteResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, errStr := parseExecuteResponse(data)
+	out, errStr := parseExecuteResponse(data, "windows")
 	if out != "hello" || errStr != "oops" {
 		t.Errorf("parseExecuteResponse = (%q,%q), want (hello,oops)", out, errStr)
+	}
+}
+
+func TestParseExecuteResponseDecodesWindowsGBK(t *testing.T) {
+	data, err := proto.Marshal(&sliverpb.Execute{
+		Stderr: []byte{0xd6, 0xd0, 0xce, 0xc4, 0xca, 0xe4, 0xb3, 0xf6},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stderr := parseExecuteResponse(data, "windows")
+	if stderr != "中文输出" {
+		t.Fatalf("decoded stderr = %q, want 中文输出", stderr)
 	}
 }
 
