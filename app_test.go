@@ -6,11 +6,15 @@ import (
 	"compress/gzip"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bishopfox/sliver/protobuf/clientpb"
+	"github.com/bishopfox/sliver/protobuf/commonpb"
 	"github.com/bishopfox/sliver/protobuf/sliverpb"
 	"google.golang.org/protobuf/proto"
 )
@@ -322,6 +326,69 @@ func TestDecodeCommandOutput(t *testing.T) {
 	}
 	if got := decodeCommandOutput(gbkText, "linux"); got == "中文输出" {
 		t.Fatal("non-Windows output must not assume GBK")
+	}
+	gb18030Text := []byte{0x95, 0x32, 0x82, 0x36}
+	if got := decodeCommandOutput(gb18030Text, "windows"); got != "𠀀" {
+		t.Fatalf("GB18030 decode = %q, want 𠀀", got)
+	}
+}
+
+func TestScreenshotDataURLValidatesResponse(t *testing.T) {
+	pngData := append(append([]byte(nil), pngSignature...), []byte("payload")...)
+	got, err := screenshotDataURL(&sliverpb.Screenshot{Data: pngData})
+	if err != nil || !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Fatalf("valid screenshot rejected: url=%q err=%v", got, err)
+	}
+	tests := []*sliverpb.Screenshot{
+		nil,
+		{},
+		{Data: []byte("not a png")},
+		{Response: &commonpb.Response{Err: "capture failed"}},
+		{Response: &commonpb.Response{Async: true, TaskID: "task-1"}},
+	}
+	for index, response := range tests {
+		if _, err := screenshotDataURL(response); err == nil {
+			t.Fatalf("invalid screenshot case %d was accepted", index)
+		}
+	}
+}
+
+func TestScreenshotFilenameIsPortable(t *testing.T) {
+	now := time.Date(2026, 10, 3, 9, 8, 7, 0, time.Local)
+	if got := screenshotFilename(` host:name/one `, now); got != "screenshot_host_name_one_20261003_090807.png" {
+		t.Fatalf("unexpected screenshot filename: %q", got)
+	}
+	if got := screenshotFilename("", now); got != "screenshot_target_20261003_090807.png" {
+		t.Fatalf("unexpected fallback screenshot filename: %q", got)
+	}
+}
+
+func TestWriteUniqueScreenshotDoesNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	first, err := writeUniqueScreenshot(dir, "screenshot_host.png", []byte("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := writeUniqueScreenshot(dir, "screenshot_host.png", []byte("second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(first) != "screenshot_host.png" || filepath.Base(second) != "screenshot_host_2.png" {
+		t.Fatalf("unexpected unique screenshot paths: %q and %q", first, second)
+	}
+	firstData, _ := os.ReadFile(first)
+	secondData, _ := os.ReadFile(second)
+	if string(firstData) != "first" || string(secondData) != "second" {
+		t.Fatalf("screenshots were overwritten: %q and %q", firstData, secondData)
+	}
+}
+
+func TestEventTextDataRejectsBinaryPayloads(t *testing.T) {
+	if got := eventTextData([]byte("中文事件")); got != "中文事件" {
+		t.Fatalf("UTF-8 event text changed: %q", got)
+	}
+	if got := eventTextData([]byte{0xff, 0xfe, 0x00}); got != "" {
+		t.Fatalf("binary event data leaked into UI: %q", got)
 	}
 }
 

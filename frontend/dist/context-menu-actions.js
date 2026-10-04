@@ -4,7 +4,7 @@
   root.ContextMenuActions = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   function fileActions(isDirectory) {
-    const actions = [{ action: 'timestamps', label: '修改时间戳' }];
+    const actions = [{ action: 'rename', label: '重命名' }];
     if (!isDirectory) actions.push({ action: 'execute', label: '运行程序' });
     actions.push(
       { action: 'download', label: isDirectory ? '下载文件夹 (.tar.gz)' : '下载' },
@@ -27,6 +27,7 @@
 
   function sessionHostActions(isWindows) {
     const actions = [
+      { action: 'interactive-shell', label: '交互式 Shell（shell -i）' },
       { action: 'spawn', label: '生成新会话' },
     ];
     if (isWindows) actions.push({ action: 'screenshot', label: '截取屏幕' });

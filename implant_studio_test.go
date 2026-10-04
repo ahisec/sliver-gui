@@ -29,6 +29,19 @@ func TestListenerValidation(t *testing.T) {
 	}
 }
 
+func TestStartStagerListenerValidatesBeforeConnecting(t *testing.T) {
+	app := NewApp()
+	if _, err := app.StartStagerListener("", 8443, "profile"); err == nil {
+		t.Fatal("empty stager host accepted")
+	}
+	if _, err := app.StartStagerListener("0.0.0.0", 0, "profile"); err == nil {
+		t.Fatal("invalid stager port accepted")
+	}
+	if _, err := app.StartStagerListener("0.0.0.0", 8443, ""); err == nil {
+		t.Fatal("empty stager profile accepted")
+	}
+}
+
 func TestValidateGenerateRequest(t *testing.T) {
 	valid := GenerateRequest{GOOS: "windows", GOARCH: "amd64", Format: "exe", C2URL: "mtls://example.com:8888", Beacon: true, Interval: 60, Jitter: 30}
 	if errors := validateGenerateRequest(valid); len(errors) != 0 {

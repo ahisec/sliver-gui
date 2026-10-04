@@ -263,6 +263,91 @@ func (a *App) FileBrowserDelete(sessionID, path string) error {
 	return err
 }
 
+var windowsReservedFilename = regexp.MustCompile(`(?i)^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$`)
+
+func fileBrowserRenameTarget(path, newName string, windows bool) (string, bool, error) {
+	name := strings.TrimSpace(newName)
+	if strings.TrimSpace(path) == "" {
+		return "", false, fmt.Errorf("path is required")
+	}
+	if name == "" {
+		return "", false, fmt.Errorf("new name cannot be empty")
+	}
+	if name == "." || name == ".." {
+		return "", false, fmt.Errorf("new name cannot be %q", name)
+	}
+	if strings.ContainsAny(name, `/\\`) {
+		return "", false, fmt.Errorf("new name must not contain path separators")
+	}
+	for _, char := range name {
+		if char == 0 || char < 0x20 || char == 0x7f {
+			return "", false, fmt.Errorf("new name must not contain control characters")
+		}
+	}
+	if windows {
+		if strings.ContainsAny(name, `<>:"|?*`) {
+			return "", false, fmt.Errorf("new name contains characters not allowed by Windows")
+		}
+		if strings.HasSuffix(name, ".") || strings.HasSuffix(name, " ") {
+			return "", false, fmt.Errorf("Windows names cannot end with a dot or space")
+		}
+		if windowsReservedFilename.MatchString(name) {
+			return "", false, fmt.Errorf("%q is a reserved Windows name", name)
+		}
+	}
+	parent, currentName := remoteParentAndBase(path)
+	if currentName == "." || currentName == "" {
+		return "", false, fmt.Errorf("the selected path cannot be renamed")
+	}
+	if name == currentName {
+		return path, false, nil
+	}
+	separator := "/"
+	if windows {
+		separator = `\`
+	}
+	if parent == "." {
+		return name, true, nil
+	}
+	if strings.HasSuffix(parent, "/") || strings.HasSuffix(parent, `\`) {
+		return parent + name, true, nil
+	}
+	return parent + separator + name, true, nil
+}
+
+// FileBrowserRename renames a file or directory without allowing the UI to
+// move it outside its current remote directory.
+func (a *App) FileBrowserRename(sessionID, path, newName string) (string, error) {
+	client, err := a.requireClient()
+	if err != nil {
+		return "", err
+	}
+	targetOS := sessionOSForID(a.ctx, client, sessionID)
+	if targetOS == "" {
+		return "", fmt.Errorf("session not found")
+	}
+	destination, changed, err := fileBrowserRenameTarget(path, newName, strings.Contains(strings.ToLower(targetOS), "windows"))
+	if err != nil || !changed {
+		return destination, err
+	}
+	a.audit.log("file-rename", sessionID, fmt.Sprintf("%s -> %s", path, destination))
+	resp, err := client.RPC.Mv(a.ctx, &sliverpb.MvReq{
+		Src:     path,
+		Dst:     destination,
+		Request: &commonpb.Request{SessionID: sessionID},
+	})
+	if err != nil {
+		return "", err
+	}
+	if resp == nil {
+		return "", fmt.Errorf("teamserver returned an empty rename response")
+	}
+	if resp.Response != nil && resp.Response.Err != "" {
+		return "", fmt.Errorf("rename failed: %s", resp.Response.Err)
+	}
+	return destination, nil
+}
+
 func fileExecuteRequest(sessionID, path string, args []string, background bool) *sliverpb.ExecuteReq {
 	return &sliverpb.ExecuteReq{
 		Path:       path,

@@ -42,3 +42,45 @@ func TestCapabilityStatusesAreDistinct(t *testing.T) {
 		seen[status] = true
 	}
 }
+
+func TestParseSemanticVersionAcceptsGoPseudoVersion(t *testing.T) {
+	got, ok := parseSemanticVersion("v1.7.4-0.20260715053412-e53f66de72b9")
+	if !ok {
+		t.Fatal("expected pseudo-version to parse")
+	}
+	if got != (semanticVersion{major: 1, minor: 7, patch: 4}) {
+		t.Fatalf("version = %+v, want 1.7.4", got)
+	}
+}
+
+func TestNegotiateServerVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		dependency string
+		server     VersionInfo
+		known      bool
+		wantMode   string
+	}{
+		{name: "matched", dependency: "v1.7.4-0.20260715053412-deadbeef", server: VersionInfo{Major: 1, Minor: 7, Patch: 4}, known: true, wantMode: versionModeMatched},
+		{name: "newer server", dependency: "v1.7.4", server: VersionInfo{Major: 1, Minor: 8, Patch: 0}, known: true, wantMode: versionModeForward},
+		{name: "older server", dependency: "v1.7.4", server: VersionInfo{Major: 1, Minor: 6, Patch: 9}, known: true, wantMode: versionModeBackward},
+		{name: "major mismatch", dependency: "v1.7.4", server: VersionInfo{Major: 2, Minor: 0, Patch: 0}, known: true, wantMode: versionModeIncompatible},
+		{name: "unknown dependency", dependency: "unknown", server: VersionInfo{Major: 1, Minor: 7, Patch: 4}, known: true, wantMode: versionModeUnknown},
+		{name: "unknown server", dependency: "v1.7.4", known: false, wantMode: versionModeUnknown},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := negotiateServerVersion(test.dependency, test.server, test.known)
+			if got.Mode != test.wantMode {
+				t.Fatalf("Mode = %q, want %q", got.Mode, test.wantMode)
+			}
+			if !got.ContinueKnownRPCs {
+				t.Fatal("known RPCs should remain enabled and be judged individually")
+			}
+			if got.Label == "" || got.Summary == "" {
+				t.Fatal("negotiation should include an operator-facing explanation")
+			}
+		})
+	}
+}

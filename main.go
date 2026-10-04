@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"log"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -22,9 +23,13 @@ var appIcon []byte
 
 func main() {
 	app := NewApp()
+	title, configErr := configuredWindowTitle(appConfigPath())
+	if configErr != nil {
+		log.Printf("窗口标题配置不可用，使用默认标题 %q: %v", defaultWindowTitle, configErr)
+	}
 
 	err := wails.Run(&options.App{
-		Title:  "Sliver GUI " + Version,
+		Title:  title,
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{

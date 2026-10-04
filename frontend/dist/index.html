@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"/><title>Sliver GUI 中文版</title><link rel="stylesheet" href="./style.css"/><script src="./process-metadata.js"></script></head>
+<head><meta charset="UTF-8"/><title>Sliver GUI 中文版</title><link rel="stylesheet" href="./vendor/xterm.css"/><link rel="stylesheet" href="./style.css"/><script src="./vendor/xterm.js"></script><script src="./vendor/addon-fit.js"></script><script src="./process-metadata.js"></script><script src="./shell-decoder.js"></script></head>
 <body>
 
 <!-- Toast container -->
@@ -17,7 +17,6 @@
     <div id="config-path" class="config-path"></div>
     <button id="connect-btn" class="btn accent full" disabled>连接</button>
     <div id="connect-error" class="error-msg"></div>
-    <div id="gui-version" class="gui-version"></div>
   </div>
 </div>
 
@@ -59,6 +58,7 @@
           <button class="toolbar-menu-item" type="button" role="menuitem" data-view="scripts">脚本</button>
           <button class="toolbar-menu-item" type="button" role="menuitem" data-view="infrastructure">基础设施</button>
           <button class="toolbar-menu-item" type="button" role="menuitem" data-view="extensions">扩展中心</button>
+          <button class="toolbar-menu-item" type="button" role="menuitem" data-view="official-console">官方控制台</button>
           <button class="toolbar-menu-item" type="button" role="menuitem" data-view="mcp">MCP</button>
         </div>
       </div>
@@ -145,7 +145,6 @@
           <p style="margin-top:8px;color:var(--muted)">可用视图：会话、信标、监听器、生成植入体、事件日志、战利品、操作员</p>
         </div>
       </div>
-      <div class="panel-watermark" id="panel-watermark">Made by Raj Kumar Mullapudi</div>
     </div>
 
   </div>
@@ -192,7 +191,10 @@
 <script src="./notification-rules.js"></script>
 <script src="./remote-address.js"></script>
 <script src="./argument-parser.js"></script>
-<script src="./timestamp-editor.js"></script>
+<script src="./command-contract.js"></script>
+<script src="./official-command-metadata.js"></script>
+<script src="./official-command-specs.js"></script>
+<script src="./gui-command-specs.js"></script>
 <script src="./context-menu-actions.js"></script>
 <script src="./agent-notification-state.js"></script>
 <script src="./main.js"></script>

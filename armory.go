@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/bishopfox/sliver/util/minisign"
 )
 
 var armoryPackageNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -32,12 +35,12 @@ var armoryPackageNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,
 //   3. Download the matching release asset (.tar.gz)
 //   4. Extract to the correct local directory
 //
-// TODO: Add minisign signature verification for package integrity.
-//       Currently skipped — packages are fetched over HTTPS from GitHub.
+// The official index is verified with Sliver's embedded Armory trust root;
+// each package is then verified with the public key from that signed index.
 
 const (
-	// The official index contains the actual package command, type and repository.
-	defaultArmoryIndexURL = "https://github.com/sliverarmory/armory/releases/latest/download/armory.json"
+	defaultArmoryIndexURL  = "https://api.github.com/repos/sliverarmory/armory/releases/latest"
+	defaultArmoryPublicKey = "RWSBpxpRWDrD7Fe+VvRE3c2VEDC2NK80rlNCj+BX0gz44Xw07r6KQD9L"
 	// HTTP timeout for armory operations
 	armoryHTTPTimeout    = 120 * time.Second
 	armoryMaxIndexSize   = 4 * 1024 * 1024
@@ -72,12 +75,20 @@ type armoryAliasManifest struct {
 	CommandName string `json:"command_name"`
 }
 
+type armoryGitHubRelease struct {
+	TagName string `json:"tag_name"`
+	Assets  []struct {
+		Name string `json:"name"`
+		URL  string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
 // ArmoryList fetches the armory index and returns available packages.
 func (a *App) ArmoryList() ([]ArmoryPackage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), armoryHTTPTimeout)
 	defer cancel()
 	client := &http.Client{}
-	index, err := fetchArmoryIndex(ctx, client, defaultArmoryIndexURL)
+	index, err := fetchOfficialArmoryIndex(ctx, client, defaultArmoryIndexURL)
 	if err != nil {
 		return nil, err
 	}
@@ -104,14 +115,15 @@ func (a *App) ArmoryList() ([]ArmoryPackage, error) {
 
 // ArmoryInstall downloads and installs a package by name from the armory.
 func (a *App) ArmoryInstall(packageName string) error {
-	if !armoryPackageNamePattern.MatchString(packageName) {
-		return fmt.Errorf("invalid package name")
+	packageName = strings.TrimSpace(packageName)
+	if err := validateArmoryPackageArgument(packageName); err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), armoryHTTPTimeout)
 	defer cancel()
 	client := &http.Client{}
-	index, err := fetchArmoryIndex(ctx, client, defaultArmoryIndexURL)
+	index, err := fetchOfficialArmoryIndex(ctx, client, defaultArmoryIndexURL)
 	if err != nil {
 		return err
 	}
@@ -119,12 +131,14 @@ func (a *App) ArmoryInstall(packageName string) error {
 	if entry == nil {
 		return fmt.Errorf("package '%s' not found in official armory index", packageName)
 	}
-	assetURL, err := armoryPackageDownloadURL(*entry)
+	if !armoryPackageNamePattern.MatchString(entry.CommandName) {
+		return fmt.Errorf("official armory index contains an invalid command name for %q", packageName)
+	}
+	archive, signature, err := fetchArmoryPackage(ctx, client, *entry)
 	if err != nil {
 		return err
 	}
-	archive, err := armoryDownload(ctx, client, assetURL, armoryMaxPackageSize, "download package")
-	if err != nil {
+	if err := verifyArmorySignature(entry.PublicKey, archive, signature); err != nil {
 		return err
 	}
 	installName, err := armoryManifestInstallName(archive, kind)
@@ -132,6 +146,105 @@ func (a *App) ArmoryInstall(packageName string) error {
 		return err
 	}
 	return installArmoryArchive(archive, installName, kind)
+}
+
+func fetchOfficialArmoryIndex(ctx context.Context, client *http.Client, releaseURL string) (*armoryIndex, error) {
+	return fetchSignedArmoryIndex(ctx, client, releaseURL, defaultArmoryPublicKey)
+}
+
+func fetchSignedArmoryIndex(ctx context.Context, client *http.Client, releaseURL, trustedPublicKey string) (*armoryIndex, error) {
+	releaseData, err := armoryDownload(ctx, client, releaseURL, armoryMaxIndexSize, "fetch armory release")
+	if err != nil {
+		return nil, err
+	}
+	var release armoryGitHubRelease
+	if err := json.Unmarshal(releaseData, &release); err != nil {
+		return nil, fmt.Errorf("parse armory release: %w", err)
+	}
+	assets := map[string]string{}
+	for _, asset := range release.Assets {
+		assets[asset.Name] = asset.URL
+	}
+	indexURL, sigURL := assets["armory.json"], assets["armory.minisig"]
+	if indexURL == "" || sigURL == "" {
+		return nil, fmt.Errorf("official armory release is missing armory.json or armory.minisig")
+	}
+	indexData, err := armoryDownload(ctx, client, indexURL, armoryMaxIndexSize, "download armory index")
+	if err != nil {
+		return nil, err
+	}
+	sigData, err := armoryDownload(ctx, client, sigURL, 64*1024, "download armory index signature")
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyArmorySignature(trustedPublicKey, indexData, sigData); err != nil {
+		return nil, fmt.Errorf("verify armory index: %w", err)
+	}
+	var index armoryIndex
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		return nil, fmt.Errorf("parse armory index: %w", err)
+	}
+	if len(index.Aliases)+len(index.Extensions) == 0 {
+		return nil, fmt.Errorf("parse armory index: index contains no packages")
+	}
+	return &index, nil
+}
+
+func fetchArmoryPackage(ctx context.Context, client *http.Client, pkg armoryIndexPackage) ([]byte, []byte, error) {
+	if strings.TrimSpace(pkg.PublicKey) == "" {
+		return nil, nil, fmt.Errorf("package '%s' has no minisign public key", pkg.CommandName)
+	}
+	u, err := url.Parse(pkg.RepoURL)
+	if err != nil || !strings.EqualFold(u.Hostname(), "github.com") {
+		return nil, nil, fmt.Errorf("invalid armory package repository URL")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 2 {
+		return nil, nil, fmt.Errorf("invalid armory package repository URL")
+	}
+	releaseURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", parts[0], parts[1])
+	releaseData, err := armoryDownload(ctx, client, releaseURL, armoryMaxIndexSize, "fetch package release")
+	if err != nil {
+		return nil, nil, err
+	}
+	var release armoryGitHubRelease
+	if err := json.Unmarshal(releaseData, &release); err != nil {
+		return nil, nil, fmt.Errorf("parse package release: %w", err)
+	}
+	assets := map[string]string{}
+	for _, asset := range release.Assets {
+		assets[asset.Name] = asset.URL
+	}
+	archiveURL := assets[pkg.CommandName+".tar.gz"]
+	sigURL := assets[pkg.CommandName+".minisig"]
+	if archiveURL == "" || sigURL == "" {
+		return nil, nil, fmt.Errorf("package release is missing archive or minisign asset")
+	}
+	archive, err := armoryDownload(ctx, client, archiveURL, armoryMaxPackageSize, "download package")
+	if err != nil {
+		return nil, nil, err
+	}
+	signature, err := armoryDownload(ctx, client, sigURL, 64*1024, "download package signature")
+	return archive, signature, err
+}
+
+func verifyArmorySignature(publicKeyText string, data, signature []byte) error {
+	var publicKey minisign.PublicKey
+	if err := publicKey.UnmarshalText([]byte(strings.TrimSpace(publicKeyText))); err != nil {
+		return fmt.Errorf("invalid minisign public key: %w", err)
+	}
+	if len(signature) == 0 {
+		return fmt.Errorf("minisign signature is missing")
+	}
+	if minisign.Verify(publicKey, data, signature) {
+		return nil
+	}
+	// Self-hosted package metadata may transport the minisig as base64.
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(signature)))
+	if err == nil && minisign.Verify(publicKey, data, decoded) {
+		return nil
+	}
+	return fmt.Errorf("minisign signature verification failed")
 }
 
 // ArmoryRemove uninstalls a package by deleting its directory.
@@ -420,6 +533,20 @@ func validateArmoryInstallName(name string) error {
 	return nil
 }
 
+func validateArmoryPackageArgument(name string) error {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	looksLikeArchive := strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz")
+	looksLikePath := filepath.IsAbs(name) || strings.ContainsAny(name, `/\\`) ||
+		(len(name) >= 2 && name[1] == ':')
+	if looksLikeArchive || looksLikePath {
+		return fmt.Errorf("armory install 需要官方 Armory 索引中的包名，不能使用文件路径；该命令读取 GUI 客户端本机的 Armory 索引，无法读取 Teamserver 或目标主机路径 %q。请先执行 armory 查看可安装包", name)
+	}
+	if name == "" {
+		return fmt.Errorf("Armory 包名不能为空；请先执行 armory 查看可安装包")
+	}
+	return nil
+}
+
 func installArmoryArchive(data []byte, packageName, kind string) error {
 	root := armoryExtDir()
 	if kind == "alias" {
@@ -470,9 +597,11 @@ func extractTarGz(r io.Reader, destDir string) error {
 			return fmt.Errorf("tar read: %w", err)
 		}
 
-		// Zip-slip protection: ensure the extracted path is within destDir
+		// Zip-slip protection: allow the archive root itself ("./"), but no
+		// entry may resolve above the temporary install directory.
 		target := filepath.Join(destDir, header.Name)
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator)) {
+		relative, relErr := filepath.Rel(destDir, target)
+		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || filepath.IsAbs(relative) {
 			return fmt.Errorf("zip-slip detected: %s", header.Name)
 		}
 
@@ -497,6 +626,8 @@ func extractTarGz(r io.Reader, destDir string) error {
 				return fmt.Errorf("write %s: %w", target, err)
 			}
 			f.Close()
+		default:
+			return fmt.Errorf("unsupported archive entry type: %s", header.Name)
 		}
 	}
 	return nil

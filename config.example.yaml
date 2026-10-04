@@ -1,0 +1,8 @@
+version: 1
+title: Sliver GUI 增强版
+dingtalk:
+  enabled: false
+  webhook: ""
+  secret: ""
+official_client:
+  path: ""

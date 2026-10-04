@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,10 @@ type App struct {
 	mu          sync.Mutex
 	client      *sliverclient.Client
 	eventCancel context.CancelFunc
+	configPath  string
+	officialMu  sync.Mutex
+	official    officialConsoleProcess
+	officialSeq uint64
 
 	// Advanced tunneling state (SOCKS5 + port forwarding).
 	// Guarded by advMu, NOT mu, so we never deadlock with requireClient().
@@ -62,6 +67,7 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) { a.ctx = ctx }
 func (a *App) shutdown(ctx context.Context) {
+	_ = a.StopOfficialConsole()
 	_ = a.StopMCP()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -149,6 +155,7 @@ func (a *App) Connect(configPath string) ConnectResult {
 		return ConnectResult{Error: err.Error()}
 	}
 	_ = a.StopMCP()
+	_ = a.StopOfficialConsole()
 	a.mu.Lock()
 	if a.client != nil {
 		a.client.Close()
@@ -157,6 +164,7 @@ func (a *App) Connect(configPath string) ConnectResult {
 		a.eventCancel()
 	}
 	a.client = client
+	a.configPath = configPath
 	a.mu.Unlock()
 
 	a.startEventStream()
@@ -173,6 +181,7 @@ func (a *App) Connect(configPath string) ConnectResult {
 }
 
 func (a *App) Disconnect() {
+	_ = a.StopOfficialConsole()
 	_ = a.StopMCP()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -184,6 +193,7 @@ func (a *App) Disconnect() {
 		a.client.Close()
 		a.client = nil
 	}
+	a.configPath = ""
 }
 
 func (a *App) requireClient() (*sliverclient.Client, error) {
@@ -239,7 +249,7 @@ func (a *App) startEventStream() {
 			}
 			payload := map[string]interface{}{
 				"type": event.EventType,
-				"data": string(event.Data),
+				"data": eventTextData(event.Data),
 			}
 			if event.Session != nil {
 				payload["session"] = map[string]interface{}{
@@ -266,6 +276,13 @@ func (a *App) startEventStream() {
 			runtime.EventsEmit(a.ctx, "sliver:event", payload)
 		}
 	}()
+}
+
+func eventTextData(data []byte) string {
+	if !utf8.Valid(data) {
+		return ""
+	}
+	return string(data)
 }
 
 // ─── Version ─────────────────────────────────────────────────────────────────
@@ -447,17 +464,31 @@ func commandExecuteWindowsRequest(sessionID, command string) *sliverpb.ExecuteWi
 	}
 }
 
-// decodeCommandOutput preserves UTF-8 output and falls back to the common
-// Windows Simplified Chinese console code page for non-UTF-8 byte streams.
+// decodeCommandOutput preserves UTF-8 output and falls back to GB18030 for
+// Windows console byte streams. GB18030 is a superset of GBK and covers text
+// emitted by both legacy Simplified Chinese code pages.
 func decodeCommandOutput(data []byte, targetOS string) string {
 	if len(data) == 0 || utf8.Valid(data) || !strings.Contains(strings.ToLower(targetOS), "windows") {
 		return string(data)
 	}
-	decoded, _, err := transform.Bytes(simplifiedchinese.GBK.NewDecoder(), data)
+	decoded, _, err := transform.Bytes(simplifiedchinese.GB18030.NewDecoder(), data)
 	if err != nil {
 		return string(data)
 	}
 	return string(decoded)
+}
+
+func sessionOSForID(ctx context.Context, client *sliverclient.Client, sessionID string) string {
+	sessions, err := client.ListSessions(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, session := range sessions {
+		if session.ID == sessionID {
+			return session.OS
+		}
+	}
+	return ""
 }
 
 // RunExecute runs a program on the target directly (Sliver's `execute`), without
@@ -490,18 +521,130 @@ func (a *App) RunExecute(sessionID, path string, args []string) ExecResult {
 
 // ─── Screenshot ──────────────────────────────────────────────────────────────
 
-func (a *App) TakeScreenshot(sessionID string) (string, error) {
-	client, err := a.requireClient()
+const screenshotTimeout = 45 * time.Second
+
+var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+
+func screenshotDataURL(resp *sliverpb.Screenshot) (string, error) {
+	data, err := screenshotPNG(resp)
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.RPC.Screenshot(a.ctx, &sliverpb.ScreenshotReq{
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+func screenshotPNG(resp *sliverpb.Screenshot) ([]byte, error) {
+	if resp == nil {
+		return nil, errors.New("teamserver returned an empty screenshot response")
+	}
+	if resp.Response != nil {
+		if resp.Response.Err != "" {
+			return nil, errors.New(resp.Response.Err)
+		}
+		if resp.Response.Async {
+			return nil, errors.New("screenshot was queued asynchronously; use an interactive session")
+		}
+	}
+	if len(resp.Data) == 0 {
+		return nil, errors.New("target returned an empty screenshot; the desktop may be unavailable or locked")
+	}
+	if !bytes.HasPrefix(resp.Data, pngSignature) {
+		return nil, errors.New("target returned invalid screenshot image data")
+	}
+	return resp.Data, nil
+}
+
+func (a *App) captureScreenshot(sessionID string) ([]byte, error) {
+	client, err := a.requireClient()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, screenshotTimeout)
+	defer cancel()
+	resp, err := client.RPC.Screenshot(ctx, &sliverpb.ScreenshotReq{
 		Request: &commonpb.Request{SessionID: sessionID},
 	})
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, errors.New("screenshot request timed out after 45 seconds")
+		}
+		return nil, fmt.Errorf("screenshot request failed: %w", err)
+	}
+	return screenshotPNG(resp)
+}
+
+func (a *App) TakeScreenshot(sessionID string) (string, error) {
+	data, err := a.captureScreenshot(sessionID)
+	if err != nil {
 		return "", err
 	}
-	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(resp.Data), nil
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+func screenshotFilename(hostname string, now time.Time) string {
+	name := strings.TrimSpace(hostname)
+	if name == "" {
+		name = "target"
+	}
+	name = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`).ReplaceAllString(name, "_")
+	name = strings.Trim(name, ". ")
+	if name == "" {
+		name = "target"
+	}
+	return fmt.Sprintf("screenshot_%s_%s.png", name, now.Format("20060102_150405"))
+}
+
+func writeUniqueScreenshot(dir, filename string, data []byte) (string, error) {
+	extension := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, extension)
+	for index := 1; index <= 9999; index++ {
+		candidateName := filename
+		if index > 1 {
+			candidateName = fmt.Sprintf("%s_%d%s", base, index, extension)
+		}
+		candidate := filepath.Join(dir, candidateName)
+		file, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("cannot create screenshot in %s: %w", dir, err)
+		}
+		written, writeErr := file.Write(data)
+		closeErr := file.Close()
+		if writeErr != nil || written != len(data) {
+			_ = os.Remove(candidate)
+			if writeErr == nil {
+				writeErr = io.ErrShortWrite
+			}
+			return "", fmt.Errorf("write screenshot %s: %w", candidate, writeErr)
+		}
+		if closeErr != nil {
+			_ = os.Remove(candidate)
+			return "", fmt.Errorf("close screenshot %s: %w", candidate, closeErr)
+		}
+		return candidate, nil
+	}
+	return "", fmt.Errorf("too many screenshots with the same filename in %s", dir)
+}
+
+// SaveScreenshot captures the original PNG directly beside the executable.
+// The image bytes are not resized or recompressed.
+func (a *App) SaveScreenshot(sessionID, hostname string) TransferResult {
+	data, err := a.captureScreenshot(sessionID)
+	if err != nil {
+		return TransferResult{Error: err.Error()}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return TransferResult{Error: fmt.Sprintf("resolve executable directory: %v", err)}
+	}
+	savePath, err := writeUniqueScreenshot(filepath.Dir(executable), screenshotFilename(hostname, time.Now()), data)
+	if err != nil {
+		return TransferResult{Error: err.Error()}
+	}
+	a.audit.log("screenshot-save", sessionID, savePath)
+	return TransferResult{Path: savePath, Bytes: int64(len(data))}
 }
 
 // ─── Process List ────────────────────────────────────────────────────────────
@@ -723,7 +866,7 @@ func (a *App) RegistryListValues(sessionID, hive, path string) ([]RegistryValue,
 		return nil, err
 	}
 	out := []RegistryValue{}
-	lines := strings.Split(strings.ReplaceAll(string(resp.Stdout), "\r\n", "\n"), "\n")
+	lines := strings.Split(strings.ReplaceAll(decodeCommandOutput(resp.Stdout, "windows"), "\r\n", "\n"), "\n")
 	for _, line := range lines {
 		// Value rows are indented; reg.exe separates columns with 4 spaces.
 		if !strings.HasPrefix(line, "    ") {
@@ -935,7 +1078,7 @@ func (a *App) ReadRemoteFile(sessionID, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	return decodeCommandOutput(data, sessionOSForID(a.ctx, client, sessionID)), nil
 }
 
 // ─── Network / Privileges / Memory ─────────────────────────────────────────────
@@ -2092,6 +2235,12 @@ func (a *App) ListCanaries() ([]CanaryView, error) {
 // StartStagerListener starts a TCP stager listener that serves a stage built
 // from a saved implant profile.
 func (a *App) StartStagerListener(host string, port uint32, profileName string) (uint32, error) {
+	if err := validateListenerHostPort(host, port); err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(profileName) == "" {
+		return 0, fmt.Errorf("stager implant profile is required")
+	}
 	client, err := a.requireClient()
 	if err != nil {
 		return 0, err
@@ -2232,10 +2381,22 @@ func (a *App) WGStopSocks(sessionID string, id int) error {
 // ─── Loot ────────────────────────────────────────────────────────────────────
 
 type LootView struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	OriginHost string `json:"originHost"`
+	Size       int64  `json:"size"`
 }
+
+type LootPreview struct {
+	LootView
+	Preview     string `json:"preview"`
+	Previewable bool   `json:"previewable"`
+	Truncated   bool   `json:"truncated"`
+	Message     string `json:"message"`
+}
+
+const lootPreviewLimit = 256 * 1024
 
 func (a *App) GetLoot() ([]LootView, error) {
 	client, err := a.requireClient()
@@ -2248,10 +2409,55 @@ func (a *App) GetLoot() ([]LootView, error) {
 	}
 	out := make([]LootView, 0, len(resp.Loot))
 	for _, l := range resp.Loot {
-		// clientpb.Loot has no Type/Credential field in v1.7.3 — only FileType.
-		out = append(out, LootView{ID: l.ID, Name: l.Name, Type: l.FileType.String()})
+		out = append(out, LootView{
+			ID: l.ID, Name: l.Name, Type: l.FileType.String(),
+			OriginHost: l.OriginHostUUID, Size: l.Size,
+		})
 	}
 	return out, nil
+}
+
+// PreviewLoot returns a bounded text preview. Binary and file-less loot are
+// never copied into the web view; operators can still download them explicitly.
+func (a *App) PreviewLoot(lootID string) (LootPreview, error) {
+	client, err := a.requireClient()
+	if err != nil {
+		return LootPreview{}, err
+	}
+	resp, err := client.RPC.LootContent(a.ctx, &clientpb.Loot{ID: lootID})
+	if err != nil {
+		return LootPreview{}, err
+	}
+	result := LootPreview{LootView: LootView{
+		ID: resp.ID, Name: resp.Name, Type: resp.FileType.String(),
+		OriginHost: resp.OriginHostUUID, Size: resp.Size,
+	}}
+	if resp.File == nil {
+		result.Message = "该条目没有文件内容"
+		return result, nil
+	}
+	if result.Size == 0 {
+		result.Size = int64(len(resp.File.Data))
+	}
+	if resp.FileType != clientpb.FileType_TEXT {
+		result.Message = "二进制内容不在界面中预览，请下载后使用合适的工具检查"
+		return result, nil
+	}
+	data := resp.File.Data
+	if len(data) > lootPreviewLimit {
+		data = data[:lootPreviewLimit]
+		result.Truncated = true
+	}
+	if !utf8.Valid(data) {
+		result.Message = "文本内容不是有效的 UTF-8，未在界面中展示"
+		return result, nil
+	}
+	result.Preview = string(data)
+	result.Previewable = true
+	if result.Truncated {
+		result.Message = "内容超过 256 KiB，仅显示开头部分"
+	}
+	return result, nil
 }
 
 func (a *App) DeleteLoot(lootID string) error {
@@ -3340,7 +3546,7 @@ func (a *App) ExecuteAssembly(sessionID, localPath, args string) AssemblyResult 
 	if err != nil {
 		return AssemblyResult{Error: err.Error()}
 	}
-	return AssemblyResult{Output: string(resp.Output)}
+	return AssemblyResult{Output: decodeCommandOutput(resp.Output, sessionOSForID(a.ctx, client, sessionID))}
 }
 
 // Sideload loads and runs a shared library / DLL in a sacrificial process.
@@ -3832,8 +4038,8 @@ func (a *App) ExecuteBeaconCommand(beaconID, command string) BeaconTaskResult {
 	// If the response came back directly (shouldn't happen for beacons, but handle it)
 	return BeaconTaskResult{
 		Status: "completed",
-		Stdout: string(resp.Stdout),
-		Stderr: string(resp.Stderr),
+		Stdout: decodeCommandOutput(resp.Stdout, beaconOS),
+		Stderr: decodeCommandOutput(resp.Stderr, beaconOS),
 	}
 }
 
@@ -4015,7 +4221,7 @@ func (a *App) GetBeaconTasks(beaconID string) ([]BeaconTaskView, error) {
 				response += "\n[stderr] " + stderr
 			}
 		} else if len(t.Response) > 0 {
-			response = string(t.Response)
+			response = decodeCommandOutput(t.Response, beaconOSForID(a.ctx, client, beaconID))
 		}
 		out = append(out, BeaconTaskView{
 			ID:          t.ID,

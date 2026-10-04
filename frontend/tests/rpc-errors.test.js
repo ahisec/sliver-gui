@@ -59,7 +59,7 @@ test('hides unknown backend details in task-safe summaries', () => {
 test('translates Armory download and compatibility failures', () => {
   assert.equal(
     rpcErrorMessage('download package: asset not found HTTP 404'),
-    'Armory 包的最新版本缺少官方压缩包',
+    'Armory 最新版本缺少索引、压缩包或签名资产',
   );
   assert.equal(
     rpcErrorMessage('fetch armory index: GitHub rate limit HTTP 403'),
@@ -72,5 +72,13 @@ test('translates Armory download and compatibility failures', () => {
   assert.equal(
     rpcErrorMessage('package manifest mismatch: expected extension.json'),
     'Armory 包清单与官方索引类型不一致，已停止安装',
+  );
+  assert.equal(
+    rpcErrorMessage('verify armory index: minisign signature verification failed'),
+    'Armory 索引或软件包签名验证失败，已停止安装',
+  );
+  assert.equal(
+    rpcErrorMessage('package release is missing archive or minisign asset'),
+    'Armory 最新版本缺少索引、压缩包或签名资产',
   );
 });

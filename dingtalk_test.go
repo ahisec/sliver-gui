@@ -51,7 +51,10 @@ func TestSignedDingTalkURLPreservesTokenAndAddsSignature(t *testing.T) {
 }
 
 func TestSaveDingTalkConfigUsesPlaintextYAMLAndSupportsClearingSecret(t *testing.T) {
-	path := filepath.Join(t.TempDir(), dingTalkConfigFilename)
+	path := filepath.Join(t.TempDir(), appConfigFilename)
+	if err := writeAppConfig(path, appYAMLConfig{Version: appConfigVersion, Title: "Retained Title"}); err != nil {
+		t.Fatal(err)
+	}
 	webhook := "https://oapi.dingtalk.com/robot/send?access_token=test-token"
 	if _, err := saveDingTalkConfig(path, DingTalkConfigInput{Enabled: true, Webhook: webhook, Secret: "first-secret"}); err != nil {
 		t.Fatal(err)
@@ -70,11 +73,11 @@ func TestSaveDingTalkConfigUsesPlaintextYAMLAndSupportsClearingSecret(t *testing
 	if !strings.Contains(string(raw), "access_token=test-token") || !strings.Contains(string(raw), "first-secret") {
 		t.Fatal("stored configuration does not contain the requested plaintext credentials")
 	}
-	var document dingTalkYAMLConfig
+	var document appYAMLConfig
 	if err := yaml.Unmarshal(raw, &document); err != nil {
 		t.Fatalf("stored configuration is not valid YAML: %v", err)
 	}
-	if document.Version != dingTalkConfigVersion || !document.Enabled || document.Webhook != webhook || document.Secret != "first-secret" {
+	if document.Version != appConfigVersion || document.Title != "Retained Title" || !document.DingTalk.Enabled || document.DingTalk.Webhook != webhook || document.DingTalk.Secret != "first-secret" {
 		t.Fatalf("unexpected YAML document: %#v", document)
 	}
 	if runtime.GOOS != "windows" {
@@ -90,13 +93,9 @@ func TestSaveDingTalkConfigUsesPlaintextYAMLAndSupportsClearingSecret(t *testing
 	if err != nil || cfg.Secret != "" {
 		t.Fatalf("clearing the visible secret failed: cfg=%#v err=%v", cfg, err)
 	}
-}
-
-func TestDingTalkConfigPathUsesExecutableDirectory(t *testing.T) {
-	executable := filepath.Join("C:\\Apps", "Sliver", "sliver-gui.exe")
-	want := filepath.Join(filepath.Dir(executable), dingTalkConfigFilename)
-	if got := dingTalkConfigPathFromExecutable(executable); got != want {
-		t.Fatalf("unexpected config path: got %q want %q", got, want)
+	document, err = readAppConfig(path)
+	if err != nil || document.Title != "Retained Title" || document.DingTalk.Secret != "" {
+		t.Fatalf("second save overwrote unrelated fields: document=%#v err=%v", document, err)
 	}
 }
 

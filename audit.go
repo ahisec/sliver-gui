@@ -37,7 +37,7 @@ func newAuditLogger() *auditLogger {
 // setIdentity records who/where subsequent entries belong to (set on connect).
 func (al *auditLogger) setIdentity(operator, server string) {
 	al.mu.Lock()
-	al.operator, al.server = operator, ""
+	al.operator, al.server = operator, server
 	al.mu.Unlock()
 }
 
@@ -51,7 +51,7 @@ func (al *auditLogger) log(action, target, detail string) {
 	e := auditEntry{
 		Time:     time.Now().UTC().Format(time.RFC3339),
 		Operator: al.operator,
-		Server:   "",
+		Server:   al.server,
 		Action:   action,
 		Target:   safeAuditStorageTarget(target),
 		Detail:   safeAuditStorageDetail(detail),

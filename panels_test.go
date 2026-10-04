@@ -74,6 +74,43 @@ func TestRemoteParentAndBaseHandlesUnixWindowsAndRelativePaths(t *testing.T) {
 	}
 }
 
+func TestFileBrowserRenameTargetPreservesRemoteDirectory(t *testing.T) {
+	tests := []struct {
+		path, name, want string
+		windows          bool
+	}{
+		{path: "/var/log/old.log", name: "new.log", want: "/var/log/new.log"},
+		{path: `C:\Temp\old.txt`, name: "new.txt", want: `C:\Temp\new.txt`, windows: true},
+		{path: "old.txt", name: "new.txt", want: "new.txt"},
+	}
+	for _, tt := range tests {
+		got, changed, err := fileBrowserRenameTarget(tt.path, tt.name, tt.windows)
+		if err != nil || !changed || got != tt.want {
+			t.Fatalf("fileBrowserRenameTarget(%q, %q) = (%q, %v, %v), want %q", tt.path, tt.name, got, changed, err, tt.want)
+		}
+	}
+	got, changed, err := fileBrowserRenameTarget("/tmp/same", "same", false)
+	if err != nil || changed || got != "/tmp/same" {
+		t.Fatalf("same-name rename should be a no-op: (%q, %v, %v)", got, changed, err)
+	}
+}
+
+func TestFileBrowserRenameTargetRejectsInvalidNames(t *testing.T) {
+	tests := []struct {
+		name    string
+		windows bool
+	}{
+		{name: ""}, {name: "."}, {name: ".."}, {name: "sub/name"}, {name: `sub\\name`},
+		{name: "CON", windows: true}, {name: "LPT1.txt", windows: true},
+		{name: "bad:name", windows: true}, {name: "trailing.", windows: true},
+	}
+	for _, tt := range tests {
+		if _, _, err := fileBrowserRenameTarget(`/tmp/original`, tt.name, tt.windows); err == nil {
+			t.Fatalf("invalid rename %q (windows=%v) was accepted", tt.name, tt.windows)
+		}
+	}
+}
+
 func TestFilePropertiesViewPreservesReadOnlyMetadata(t *testing.T) {
 	entry := FileEntry{Name: "report.txt", IsDir: false, Size: 42, Mode: "-rw-r--r--", ModTime: 1710000000}
 	got := filePropertiesView("/tmp/report.txt", entry)

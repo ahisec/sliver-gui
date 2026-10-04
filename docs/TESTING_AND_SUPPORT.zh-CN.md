@@ -25,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify.ps1
 - [ ] C2 包含 HTTP(S) 时 HTTP C2 档案下拉及查看、创建、导入、编辑、验证入口可用；移除 HTTP(S) 后字段自动禁用且不提交旧值。
 - [ ] C2 包含 `wg://` 或 `wireguard://` 时 WireGuard 隧道 IP 和端口可编辑；移除 WireGuard 后字段自动禁用且不提交旧值。
 - [ ] 在 720px 窄窗口检查档案、构建记录、活动监听器、脚本管理器和 HTTP C2 编辑器，无不可达控件或依赖大范围横向拖动的内容。
-- [ ] 按 `docs/OPERATOR_WORKFLOW_REVIEW.zh-CN.md` 逐项检查连接、监听、生成、目标、文件、进程、网络、扩展、MCP、审计和报告入口。
+- [ ] 逐项检查连接、监听、生成、目标、文件、进程、网络、扩展、MCP、审计和报告入口。
 
 ## 支持范围
 

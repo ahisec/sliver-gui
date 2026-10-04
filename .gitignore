@@ -22,6 +22,12 @@ node_modules/
 operators/
 configs/
 
+# Runtime configuration may contain DingTalk credentials and local paths.
+/config.yaml
+/sliver-gui.yaml
+/dingtalk-notifications.yaml
+**/official-client-data/
+
 # ── Downloaded loot / implants / dumps ───────────────────────
 *.dmp
 *.bin
@@ -49,6 +55,10 @@ win.exe
 
 # ── Go ───────────────────────────────────────────────────────
 vendor/
+!frontend/dist/vendor/
+!frontend/dist/vendor/xterm.js
+!frontend/dist/vendor/xterm.css
+!frontend/dist/vendor/addon-fit.js
 *.test
 *.out
 

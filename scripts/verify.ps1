@@ -30,6 +30,11 @@ Write-Host '== Frontend tests =='
 Invoke-Checked { node --test frontend/tests/*.test.js } 'Frontend tests'
 
 Write-Host '== Generated binding inventory =='
-Invoke-Checked { go run ./cmd/binding-inventory } 'Generated binding inventory'
+$bindingInventory = Join-Path ([System.IO.Path]::GetTempPath()) ("sliver-gui-wails-bindings-{0}.md" -f [guid]::NewGuid())
+try {
+    Invoke-Checked { go run ./cmd/binding-inventory -out $bindingInventory } 'Generated binding inventory'
+} finally {
+    Remove-Item -LiteralPath $bindingInventory -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host 'All local verification checks passed.'

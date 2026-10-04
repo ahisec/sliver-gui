@@ -2,12 +2,14 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { fileActions, processActions, sessionHostActions, beaconHostActions } = require('../dist/context-menu-actions.js');
 
-test('file context actions expose timestamps without the removed properties entry', () => {
+test('file context actions omit unsupported timestamps and properties entries', () => {
   const file = fileActions(false).filter(item => item.action).map(item => item.action);
   const directory = fileActions(true).filter(item => item.action).map(item => item.action);
 
-  assert.deepEqual(file, ['timestamps', 'execute', 'download', 'upload', 'delete']);
-  assert.deepEqual(directory, ['timestamps', 'download', 'upload', 'delete']);
+  assert.deepEqual(file, ['rename', 'execute', 'download', 'upload', 'delete']);
+  assert.deepEqual(directory, ['rename', 'download', 'upload', 'delete']);
+  assert.equal(file.includes('timestamps'), false);
+  assert.equal(directory.includes('timestamps'), false);
   assert.equal(file.includes('properties'), false);
   assert.equal(directory.includes('properties'), false);
 });
@@ -22,6 +24,8 @@ test('Session host actions omit misleading Sleep while preserving Windows-only a
   const windows = sessionHostActions(true).map(item => item.action);
   const linux = sessionHostActions(false).map(item => item.action);
 
+  assert.equal(windows[0], 'interactive-shell');
+  assert.equal(linux[0], 'interactive-shell');
   assert.equal(windows.includes('sleep'), false);
   assert.equal(linux.includes('sleep'), false);
   assert.equal(windows.includes('screenshot'), true);
@@ -35,6 +39,8 @@ test('Beacon host actions expose asynchronous capabilities only', () => {
   const linux = beaconHostActions(false).map(item => item.action);
   assert.deepEqual(windows, ['interactive-session', 'beacon-timing', 'beacon-tasks', 'integrity']);
   assert.deepEqual(linux, ['interactive-session', 'beacon-timing', 'beacon-tasks']);
+  assert.equal(windows.includes('interactive-shell'), false);
+  assert.equal(linux.includes('interactive-shell'), false);
   assert.equal(windows.includes('files'), false);
   assert.equal(windows.includes('processes'), false);
 });

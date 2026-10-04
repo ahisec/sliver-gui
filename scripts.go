@@ -849,12 +849,12 @@ func (a *App) executeShellCmd(sessionID, cmd string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out := string(resp.Stdout)
+	out := decodeCommandOutput(resp.Stdout, sess.OS)
 	if len(resp.Stderr) > 0 {
 		if out != "" {
 			out += "\n"
 		}
-		out += string(resp.Stderr)
+		out += decodeCommandOutput(resp.Stderr, sess.OS)
 	}
 	return out, nil
 }

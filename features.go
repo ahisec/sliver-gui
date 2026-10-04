@@ -984,7 +984,11 @@ func (a *App) ExecuteWindowsAdvanced(sessionID, path string, args []string, useT
 	if err != nil {
 		return ExecResult{Error: err.Error()}
 	}
-	return ExecResult{Stdout: string(resp.Stdout), Stderr: string(resp.Stderr), Status: resp.Status}
+	return ExecResult{
+		Stdout: decodeCommandOutput(resp.Stdout, "windows"),
+		Stderr: decodeCommandOutput(resp.Stderr, "windows"),
+		Status: resp.Status,
+	}
 }
 
 // ─── Shellcode utilities (server-side transforms) ───────────────────────────
@@ -1111,5 +1115,10 @@ func (a *App) ExecWasmExtension(sessionID, name string, args []string) ExecResul
 		return ExecResult{Error: err.Error()}
 	}
 	a.recordExtensionExecution("wasm", name, sessionID, "success", "执行完成", started)
-	return ExecResult{Stdout: string(resp.Stdout), Stderr: string(resp.Stderr), Status: resp.ExitCode}
+	targetOS := sessionOSForID(a.ctx, client, sessionID)
+	return ExecResult{
+		Stdout: decodeCommandOutput(resp.Stdout, targetOS),
+		Stderr: decodeCommandOutput(resp.Stderr, targetOS),
+		Status: resp.ExitCode,
+	}
 }
